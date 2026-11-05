@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 
 /**
  * 无限滚动哨兵。
@@ -49,6 +49,17 @@ export function useInfiniteScroll(
 
   onMounted(observe)
   onBeforeUnmount(disconnect)
+
+  // 哨兵通常放在 `v-if` / `v-else` 分支里（首屏骨架 vs 列表）：组件 mounted 时元素还不存在，
+  // 此时 observe() 会拿到 null 直接返回，之后再也没人观察它 —— 无限滚动就此失效。
+  // 用 watch + flush:'post' 等元素真正挂载后补一次观察。
+  watch(
+    sentinel,
+    (el) => {
+      if (el) observe()
+    },
+    { flush: 'post' },
+  )
 
   return { sentinel, observe, disconnect }
 }
