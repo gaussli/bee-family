@@ -1,6 +1,8 @@
 # ---------- 依赖与构建产物 ----------
 node_modules/
 dist/
+# QA 验收用独立输出目录（避免与 dist 的 safe-delete 锁冲突）
+dist-qa/
 target/
 *.iml
 .idea/

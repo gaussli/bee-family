@@ -18,20 +18,16 @@
 bee-family/
 ├── backend/                    Spring Boot 服务（端口 8080）
 │   ├── src/main/java/com/beefamily/album/
-│   │   ├── common/             统一响应信封、业务异常、全局异常处理、TraceId
+│   │   ├── common/             统一响应信封、分页、错误码、业务异常、全局异常处理、TraceId
 │   │   ├── config/             Security / Jackson / 存储 / Web 配置
-│   │   ├── auth/               注册登录、JWT、当前用户上下文
-│   │   ├── family/             家庭与成员、邀请码
-│   │   ├── baby/               宝宝档案
-│   │   ├── growth/             成长记录与曲线
-│   │   ├── milestone/          里程碑
-│   │   ├── album/              相册
-│   │   ├── photo/              照片、上传、缩略图、EXIF、批量操作
-│   │   ├── tag/                标签
-│   │   ├── timeline/           时间轴聚合
-│   │   ├── search/             全局搜索
-│   │   ├── stats/              概览统计
-│   │   └── file/               文件读取（Range / 缓存）
+│   │   ├── security/           JWT 签发校验、认证过滤器、当前用户上下文、家庭访问守卫
+│   │   ├── domain/             10 张表的 JPA 实体与枚举
+│   │   ├── repository/         仓储接口（含时间轴 UNION ALL 原生查询）
+│   │   ├── dto/                各领域请求/响应 record，按领域分子包
+│   │   ├── mapper/             实体 ↔ DTO 转换（静态方法，无状态）
+│   │   ├── service/            业务逻辑与事务边界（鉴权/家庭/宝宝/成长/里程碑/相册/照片/标签/时间轴/搜索/统计/存储）
+│   │   ├── controller/         12 个 REST 控制器，共 44 个端点
+│   │   └── support/            日期、限额、邀请码、图片类型与魔数校验等横切工具
 │   └── src/main/resources/
 │       ├── application.yml    公共配置（不含任何口令）
 │       ├── application-local.yml.example   本地配置模板
@@ -39,20 +35,24 @@ bee-family/
 ├── frontend/                   前端应用（端口 5173）
 │   └── src/
 │       ├── api/                axios 封装与各领域接口
-│       ├── components/base/    19 个基础组件（BeeButton / BeeImage / BeeLightbox…）
-│       ├── components/business/17 个业务组件（相册卡 / 时间轴 / 成长曲线…）
+│       ├── components/base/    19 个基础组件（BeeButton / BeeImage / BeeIcon…）
+│       ├── components/business/17 个业务组件（相册卡 / 时间轴 / 成长曲线 / 灯箱…）
 │       ├── composables/        焦点陷阱、无限滚动、上传队列、Toast、断点
 │       ├── layouts/            AppShell / SideNav / TopBar / TabBar
 │       ├── router/             路由表与鉴权守卫
 │       ├── stores/             Pinia（auth / family / album / photo / toast）
 │       ├── styles/             tokens.css（设计令牌）/ reset.css / base.css
 │       ├── types/              与后端 DTO 逐字段对齐的类型
+│       ├── utils/              格式化、校验、图片、防抖、剪贴板
 │       └── views/              10 个页面
 └── docs/
-    ├── 01-prd.md               产品需求
+    ├── 01-prd.md               产品需求（范围唯一依据）
     ├── 02-ui-design.md         视觉与交互规范（含逐页线框）
-    ├── 03-architecture.md      技术架构与任务拆分
-    └── api-smoke.sh            接口冒烟测试脚本
+    ├── 03-architecture.md      技术架构、API 契约与任务拆分
+    ├── 04-test-report.md       测试报告（用例、并发压测、性能实测）
+    ├── api-smoke.sh            接口冒烟测试脚本（44 项断言）
+    ├── e2e-verify.mjs          端到端 / 越权 / 并发验证脚本
+    └── screenshots/            各页面实拍截图（1440 / 375）
 ```
 
 ---
@@ -187,16 +187,75 @@ npm run dev
 
 ---
 
-## 六、接口冒烟测试
+## 六、测试
+
+### 1. 后端单元 / 集成测试（不依赖数据库）
+
+```bash
+cd backend
+export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home   # JDK 17
+mvn test
+```
+
+一条命令即可跑完 **190 个用例**，不需要 MySQL、不需要任何环境变量 / 密钥：
+Service 层用 Mockito 打桩仓储，Controller 层用 `@WebMvcTest` 只加载 Web 切片。
+
+需要真实 MySQL 的用例（原生 `UNION ALL` 时间轴排序与分页、唯一约束、外键 `ON DELETE`
+行为）打了 `@Tag("mysql")`，默认被 `pom.xml` 里的 `<excludedGroups>${qa.excludedGroups}</excludedGroups>`
+（默认值 `mysql`）排除。显式运行：
+
+```bash
+cd backend
+DB_USERNAME=root DB_PASSWORD='<你的口令>' \
+mvn test -Dgroups=mysql -Dqa.excludedGroups=none
+```
+
+> 这组用例会在库里新建一套 `QA家族-<时间戳>` 的隔离数据，跑完自动删除，不会触碰既有数据。
+
+### 2. 前端纯函数验证（不引入测试框架）
+
+```bash
+cd frontend
+npm run verify
+```
+
+`scripts/verify-utils.mjs` 对 `src/utils/format.ts` 与 `src/utils/validate.ts` 做 32 项断言
+（含 `highlight()` 的 XSS 转义用例），用 Node 22 原生的 TypeScript 类型擦除
+（`--experimental-strip-types`）直接跑，**不新增任何 devDependency**。
+
+> 为什么不用 vitest：本项目前端刻意保持零测试框架的依赖面，引入 vitest 会带进
+> jsdom / tinypool 等一串传递依赖，与「只断言纯函数」的目标不成比例。
+
+### 3. 端到端 / 越权 / 鉴权 / 并发 / 分页（需要真实后端）
+
+```bash
+# 必须连一个空库：user 表非空时注册需要邀请码，只有首个用户才会成为 owner 并自动建家庭
+mysql -uroot -p -e "create database bee_family_e2e default character set utf8mb4"
+cd backend && DB_URL='jdbc:mysql://localhost:3306/bee_family_e2e?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false' \
+  DB_USERNAME=root DB_PASSWORD='<你的口令>' mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=18081
+
+# 另开一个终端
+BASE_URL=http://127.0.0.1:18081 DB_NAME=bee_family_e2e UPLOAD_ROOT=backend/data/uploads-e2e \
+  node docs/e2e-verify.mjs
+```
+
+49 条用例覆盖：主流程 16 条、跨家庭越权 10 条、鉴权 6 条、上传安全 6 条、并发 4 条、分页 4 条、性能 1 条、
+清理 2 条。脚本自建账号与数据，结束走一遍 `DELETE /api/family` 九步删除，不留残留。
+
+完整测试结论（用例清单、并发压测数据、性能实测、遗留风险）见 `docs/04-test-report.md`。
+
+---
+
+## 七、接口冒烟测试
 
 后端 + 数据库就绪后：
 
 ```bash
 # 口令必须由环境变量传入（脚本里没有任何默认口令，缺了会直接报用法）
-EMAIL=mom@home.local PASSWORD=<你的密码> docs/api-smoke.sh
+EMAIL=<你的邮箱> PASSWORD=<你的密码> docs/api-smoke.sh
 
 # 顺带验证 Vite 代理链路
-BASE_URL=http://localhost:5173/api EMAIL=mom@home.local PASSWORD=<你的密码> docs/api-smoke.sh
+BASE_URL=http://localhost:5173/api EMAIL=<你的邮箱> PASSWORD=<你的密码> docs/api-smoke.sh
 ```
 
 脚本会覆盖 44 项接口断言，逐项打印 `PASS / FAIL`，最后给出汇总与失败清单，
@@ -209,7 +268,7 @@ BASE_URL=http://localhost:5173/api EMAIL=mom@home.local PASSWORD=<你的密码> 
 
 ---
 
-## 七、约定与注意事项
+## 八、约定与注意事项
 
 - **统一响应信封**：`{ code, message, data, traceId }`，`code=0` 表示成功；
   axios 响应拦截器已把 `data` 拆出来直接返回，业务代码不用再解一层。
@@ -224,7 +283,7 @@ BASE_URL=http://localhost:5173/api EMAIL=mom@home.local PASSWORD=<你的密码> 
 
 ---
 
-## 八、设计文档
+## 九、设计文档
 
 | 文档 | 内容 |
 | --- | --- |
