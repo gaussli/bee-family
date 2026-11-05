@@ -45,6 +45,27 @@ public interface PhotoTagRepository extends JpaRepository<PhotoTag, com.beefamil
     int deleteByFamilyId(@Param("familyId") Long familyId);
 
     /**
+     * 幂等插入一条照片-标签关联。
+     *
+     * <p><b>为什么不用 {@code saveAll}</b>：同一张照片被两个请求同时打同一个标签时，
+     * 联合主键 {@code (photo_id, tag_id)} 会冲突，`saveAll` 直接抛
+     * {@code DataIntegrityViolationException} → 500。而对「打标签」这个动作来说，
+     * 并发写同一个关联本来就应该收敛成一行，冲突是**正常**语义，不该用异常表达。</p>
+     *
+     * <p><b>为什么用 {@code ON DUPLICATE KEY UPDATE} 而不是 {@code INSERT IGNORE}</b>：
+     * {@code INSERT IGNORE} 会把**所有**错误降级成 warning，包括外键不存在（tag 刚被删）——
+     * 那会静默丢关联。{@code ON DUPLICATE KEY UPDATE} 只吞唯一键冲突，外键错误照抛。</p>
+     *
+     * @param photoId 照片 id
+     * @param tagId   标签 id
+     * @return 影响行数：1 = 新插入，0 = 已存在（MySQL 对「无实际变更」返回 0）
+     */
+    @Modifying
+    @Query(value = "insert into photo_tag (photo_id, tag_id, created_at) values (:photoId, :tagId, now()) "
+            + "on duplicate key update photo_id = photo_id", nativeQuery = true)
+    int insertIfAbsent(@Param("photoId") Long photoId, @Param("tagId") Long tagId);
+
+    /**
      * 统计某标签关联的照片数。
      *
      * @param tagId 标签 id

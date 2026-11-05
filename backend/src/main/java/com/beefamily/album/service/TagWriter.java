@@ -4,6 +4,9 @@ import com.beefamily.album.common.BusinessException;
 import com.beefamily.album.common.ErrorCode;
 import com.beefamily.album.domain.Tag;
 import com.beefamily.album.repository.TagRepository;
+import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,6 +35,11 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class TagWriter {
 
+    private static final Logger log = LoggerFactory.getLogger(TagWriter.class);
+
+    /** 幂等插入后回查的最大尝试次数（含首次）。 */
+    private static final int MAX_ATTEMPTS = 2;
+
     private final TagRepository tagRepository;
 
     /**
@@ -46,14 +54,26 @@ public class TagWriter {
     /**
      * 幂等地拿到「家庭内名为 {@code name} 的标签行」：不存在则创建，存在则复用。
      *
+     * <p><b>极端竞态兜底</b>：{@code on duplicate key update} 之后紧接着的 SELECT 理论上一定能
+     * 读到（本事务自己的写自己可见，对手已提交也可见），但如果对手事务在这两步之间回滚并**再次**
+     * 抢先提交、或连接层做了读写分离路由，仍可能读空。这时重试一次；两次都读空才抛业务异常，
+     * 且 WARN 里带 {@code familyId/name}，便于区分「真的写不进去」和「读到了陈旧路由」。</p>
+     *
      * @param familyId 家庭 id
      * @param name     标签名（已规范化）
      * @return 标签实体（游离态，调用方只应读取 {@code id}）
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Tag createOrFind(Long familyId, String name) {
-        tagRepository.insertIfAbsent(familyId, name);
-        return tagRepository.findByFamilyIdAndName(familyId, name)
-                .orElseThrow(() -> new BusinessException(ErrorCode.INTERNAL_ERROR));
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            tagRepository.insertIfAbsent(familyId, name);
+            Optional<Tag> found = tagRepository.findByFamilyIdAndName(familyId, name);
+            if (found.isPresent()) {
+                return found.get();
+            }
+            log.warn("tag upsert then lookup missed familyId={} name={} attempt={}", familyId, name, attempt);
+        }
+        log.error("tag upsert failed familyId={} name={} attempts={}", familyId, name, MAX_ATTEMPTS);
+        throw new BusinessException(ErrorCode.INTERNAL_ERROR, "标签写入失败，请重试");
     }
 }

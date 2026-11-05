@@ -9,10 +9,8 @@ import com.beefamily.album.dto.album.AlbumUpdateReq;
 import com.beefamily.album.dto.album.DeleteAlbumResp;
 import com.beefamily.album.dto.album.PhotoStrategy;
 import com.beefamily.album.service.AlbumService;
+import com.beefamily.album.support.LockConflicts;
 import jakarta.validation.Valid;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,8 +28,6 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping(value = "/api/albums", produces = MediaType.APPLICATION_JSON_VALUE)
 public class AlbumController {
-
-    private static final Logger log = LoggerFactory.getLogger(AlbumController.class);
 
     private final AlbumService albumService;
 
@@ -79,13 +75,10 @@ public class AlbumController {
     /**
      * 更新相册（创建者或 owner）。
      *
-     * <p><b>为什么这里要重试一次</b>：设封面（本接口）与删照片
-     * （{@code PhotoService.deletePhotosBulk}）并发时，InnoDB 偶尔会因「相册行排他锁 ↔ 照片行
-     * 外键共享锁」互等而回滚其中一个事务，抛
-     * {@code PessimisticLockingFailureException}（含 {@code DeadlockLoserDataAccessException} /
-     * {@code CannotAcquireLockException}）。这类异常是**可重试**的，直接冒泡会变成用户的 500。
-     * {@code AlbumService#update} 自带事务边界，所以在这里再调一次就是重开一个干净事务。
-     * 重试仍失败才向上抛（由全局异常处理映射成 50001）。</p>
+     * <p><b>为什么要重试一次</b>：设封面（本接口）与删照片
+     * （{@code PhotoService.deletePhotosBulk}）并发时，InnoDB 偶尔会因「相册行排他锁 ↔
+     * 照片行外键共享锁」互等而回滚其中一个事务。这类异常是可重试的，直接冒泡就是用户的 500；
+     * 重试策略见 {@link LockConflicts}（service 自带事务边界，重试即重开干净事务）。</p>
      *
      * @param id  相册 id
      * @param req 请求
@@ -93,13 +86,7 @@ public class AlbumController {
      */
     @PatchMapping(value = "/{id}", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ApiResponse<AlbumResp> update(@PathVariable Long id, @Valid @RequestBody AlbumUpdateReq req) {
-        try {
-            return ApiResponse.ok(albumService.update(id, req));
-        } catch (PessimisticLockingFailureException ex) {
-            log.warn("album update lock conflict, retrying once albumId={} cause={}", id,
-                    ex.getClass().getSimpleName());
-            return ApiResponse.ok(albumService.update(id, req));
-        }
+        return ApiResponse.ok(LockConflicts.retryOnce("album.update", () -> albumService.update(id, req)));
     }
 
     /**
@@ -108,6 +95,9 @@ public class AlbumController {
      * <p>{@code photoStrategy} 由 Spring 直接绑定枚举，非法取值会抛
      * {@code MethodArgumentTypeMismatchException} → 40002（见 §3.4 异常矩阵）。</p>
      *
+     * <p>{@code photoStrategy=delete} 会走照片删除编排（清封面 + 维护计数），与并发的设封面请求
+     * 存在同样的锁竞争，因此同样套一层锁冲突重试。</p>
+     *
      * @param id            相册 id
      * @param photoStrategy 照片处置策略，默认 move
      * @return 处置结果
@@ -115,6 +105,6 @@ public class AlbumController {
     @DeleteMapping("/{id}")
     public ApiResponse<DeleteAlbumResp> delete(@PathVariable Long id,
                                                @RequestParam(defaultValue = "move") PhotoStrategy photoStrategy) {
-        return ApiResponse.ok(albumService.delete(id, photoStrategy));
+        return ApiResponse.ok(LockConflicts.retryOnce("album.delete", () -> albumService.delete(id, photoStrategy)));
     }
 }

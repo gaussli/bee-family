@@ -97,6 +97,11 @@ public interface TagRepository extends JpaRepository<Tag, Long> {
      * {@code ERROR Duplicate entry ...} 日志 —— 对「可预期」的并发是纯噪声（实测 10 并发刷 8 条
      * ERROR），还会误导运维告警。{@code ON DUPLICATE KEY UPDATE} 不抛异常、不产生 ERROR 日志。</p>
      *
+     * <p><b>关于 {@code last_used_at}</b>：{@code tag} 表**没有**这个冗余列 —— 标签的
+     * 「最近使用时间」是由 {@link #findUsage} 现算的 {@code max(photo_tag.created_at)}，
+     * 单一数据源、不需要维护，因此这条写路径里也不存在「读-改-写 last_used_at」的隐患。
+     * 若将来为了排序性能要落成实体列，需要一次 Flyway 迁移 + 回填，属于独立需求。</p>
+     *
      * @param familyId 家庭 id
      * @param name     标签名（已规范化）
      * @return 影响行数：1 = 新插入，0 = 已存在

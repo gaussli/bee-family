@@ -115,16 +115,12 @@ public class TagService {
             photoTagRepository.deleteAllById(toDelete);
         }
 
-        List<PhotoTag> toInsert = new ArrayList<>();
+        // 关联插入用幂等语句（联合主键冲突收敛成 1 行）：同一张照片被并发打同一个标签时，
+        // saveAll 会抛 DataIntegrityViolationException → 500，而对「打标签」来说冲突是正常语义
         for (Long tagId : targetTagIds) {
             if (!existingTagIds.contains(tagId)) {
-                PhotoTag relation = new PhotoTag();
-                relation.setId(new PhotoTagId(photoId, tagId));
-                toInsert.add(relation);
+                photoTagRepository.insertIfAbsent(photoId, tagId);
             }
-        }
-        if (!toInsert.isEmpty()) {
-            photoTagRepository.saveAll(toInsert);
         }
         return new ArrayList<>(targets.keySet());
     }

@@ -586,10 +586,21 @@ public class PhotoService {
     /**
      * 清空指向被删照片的相册封面。
      *
-     * <p>先按 {@code family_id + cover_photo_id} 查出受影响的相册，再逐条按主键条件置空，
-     * 而不是一条 {@code update album set cover_photo_id = null where cover_photo_id in (...)}：
-     * 后者是二级索引范围更新，会锁住 {@code idx_album_cover_photo} 的范围间隙（含 supremum），
-     * 与「设封面」的加锁顺序形成环（QA P1-③，实测 20 轮 20 次死锁）。</p>
+     * <p><b>为什么不直接写一条</b>
+     * {@code update album set cover_photo_id = null where cover_photo_id = ? and family_id = ?}：
+     * 那条语句的 WHERE 走的是二级索引 {@code idx_album_cover_photo}，是一条**索引范围更新**，
+     * InnoDB 会连范围间隙（含 supremum 记录）一起锁住。而「设封面」是按「主键 → 二级索引」的
+     * 顺序加锁，两边顺序相反就成环 —— {@code SHOW ENGINE INNODB STATUS} 抓到的死锁环是：</p>
+     * <pre>
+     * (1) update album set cover_photo_id=33 ... where id=2
+     *     HOLDS PRIMARY 行锁(X)          WAITING idx_album_cover_photo 的 supremum 间隙锁
+     * (2) update album set photo_count=photo_count-1 ... where id=2
+     *     HOLDS idx_album_cover_photo(X) WAITING PRIMARY 行锁(X)
+     * </pre>
+     *
+     * <p>所以改成「先按 {@code family_id + cover_photo_id} 查出受影响的相册，再逐条按主键条件置空」：
+     * 最终落库的结果与那条范围 UPDATE 完全一致（{@code cover_photo_id} 被置 NULL、不留悬挂），
+     * 但锁粒度只剩被命中的那几行 PK，且加锁顺序与设封面一致。</p>
      *
      * @param familyId 家庭 id
      * @param photoIds 被删照片 id

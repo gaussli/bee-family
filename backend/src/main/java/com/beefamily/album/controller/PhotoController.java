@@ -12,6 +12,7 @@ import com.beefamily.album.dto.photo.PhotoResp;
 import com.beefamily.album.dto.photo.PhotoUpdateReq;
 import com.beefamily.album.dto.photo.PhotoUploadResp;
 import com.beefamily.album.service.PhotoService;
+import com.beefamily.album.support.LockConflicts;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.http.MediaType;
@@ -91,8 +92,14 @@ public class PhotoController {
     /**
      * 更新照片。
      *
-     * <p><b>契约例外</b>：{@code tags} 是完整集合语义（{@code []} 清空、{@code null} 不修改标签），
-     * 其余字段遵循全量提交（§11.4）。</p>
+     * <p><b>契约例外（两处）</b>：</p>
+     * <ul>
+     *   <li>{@code tags} 是完整集合语义（{@code []} 清空、{@code null} 不修改标签）；</li>
+     *   <li>{@code albumId} 是三态语义（字段缺席 = 不修改归属、{@code null} = 移到未分类、
+     *       数字 = 移到该相册）。原因是前端编辑标题/标签的请求体本来就不带 {@code albumId}，
+     *       把它当成「移到未分类」会让照片静默掉出相册。</li>
+     * </ul>
+     * <p>其余字段遵循全量提交（§11.4）。</p>
      *
      * @param id  照片 id
      * @param req 请求
@@ -100,18 +107,22 @@ public class PhotoController {
      */
     @PatchMapping(value = "/api/photos/{id}", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ApiResponse<PhotoResp> update(@PathVariable Long id, @Valid @RequestBody PhotoUpdateReq req) {
-        return ApiResponse.ok(photoService.update(id, req));
+        return ApiResponse.ok(LockConflicts.retryOnce("photo.update", () -> photoService.update(id, req)));
     }
 
     /**
      * 删除单张照片。
+     *
+     * <p>删除会清 {@code album.cover_photo_id} / {@code family.cover_photo_id} 并扣减
+     * {@code album.photo_count}，与并发的「设封面」请求存在锁竞争，故套一层锁冲突重试
+     * （见 {@link LockConflicts}）。</p>
      *
      * @param id 照片 id
      * @return 空响应
      */
     @DeleteMapping("/api/photos/{id}")
     public ApiResponse<Void> delete(@PathVariable Long id) {
-        photoService.delete(id);
+        LockConflicts.retryOnce("photo.delete", () -> photoService.delete(id));
         return ApiResponse.ok();
     }
 
@@ -123,7 +134,8 @@ public class PhotoController {
      */
     @PostMapping(value = "/api/photos/batch-delete", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ApiResponse<BatchResultResp> batchDelete(@Valid @RequestBody BatchDeleteReq req) {
-        return ApiResponse.ok(photoService.batchDelete(req.photoIds()));
+        return ApiResponse.ok(
+                LockConflicts.retryOnce("photo.batchDelete", () -> photoService.batchDelete(req.photoIds())));
     }
 
     /**
