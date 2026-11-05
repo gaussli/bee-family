@@ -1,0 +1,38 @@
+%% Extracted from docs/07-architecture-incremental.md §7.1
+%% 注册 → 无家庭引导 → 创建家庭 / 凭码申请（对象初始化与创建流程）
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant V as LoginView / OnboardingView
+    participant R as router.beforeEach
+    participant A as AuthController / FamilyController
+    participant S as AuthService / FamilyCodeService
+    participant DB as MySQL
+
+    U->>V: 填写 email/password/nickname（无邀请码）
+    V->>A: POST /api/auth/register
+    A->>S: register(RegisterReq)
+    S->>DB: INSERT user（不建 family，不建 member）
+    DB-->>S: userId
+    S-->>A: TokenResp{activeFamilyId:null, families:[], onboardingState:NEW}
+    A-->>V: 200
+    V->>R: 跳 /timeline
+    R->>R: MeResp.families 为空 → 重定向 /onboarding（状态 A）
+    alt 创建自己的家庭
+        U->>V: 输入家庭名
+        V->>A: POST /api/families {name}
+        A->>S: 同事务：生成 10 位码 + INSERT family + INSERT family_member(owner) + UPDATE user.active_family_id
+        S->>DB: COMMIT
+        DB-->>A: FamilyResp{familyCode}
+        A-->>V: 200 → router.replace('/timeline') 空态
+    else 凭家庭码加入
+        U->>V: 输入 10 位码
+        V->>A: POST /api/family-code/lookup {familyCode}
+        A-->>V: {valid:true, familyName:"许家小院"}（仅家庭名）
+        U->>V: 确认 + 选填留言
+        V->>A: POST /api/join-requests
+        A->>S: 校验码 / 幂等 pending / 24h<5 / attempt_count+1
+        S->>DB: INSERT family_join_request(pending)
+        DB-->>A: JoinRequestResp
+        A-->>V: OnboardingState=PENDING（手动刷新，不轮询）
+    end

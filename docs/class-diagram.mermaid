@@ -1,0 +1,355 @@
+%% Extracted from docs/07-architecture-incremental.md 附录 C
+classDiagram
+    direction TB
+
+    class User {
+        <<entity>>
+        +Long id
+        +String email
+        +String passwordHash
+        +String nickname
+        +String avatarUrl
+        +LocalDateTime tokenValidAfter
+        +Long activeFamilyId
+        +LocalDateTime createdAt
+    }
+    class Family {
+        <<entity>>
+        +Long id
+        +String name
+        +Long ownerId
+        +String familyCode
+        +Long coverPhotoId
+        +LocalDateTime createdAt
+    }
+    class FamilyMember {
+        <<entity>>
+        +Long id
+        +Long familyId
+        +Long userId
+        +Role role
+        +Integer ownerFlag
+        +LocalDateTime joinedAt
+    }
+    class FamilyJoinRequest {
+        <<entity>>
+        +Long id
+        +Long familyId
+        +String familyCodeSnapshot
+        +Long applicantUserId
+        +JoinStatus status
+        +String message
+        +String rejectReason
+        +Integer attemptCount
+        +Long reviewedBy
+        +LocalDateTime reviewedAt
+        +Integer pendingFlag
+        +LocalDateTime createdAt
+        +LocalDateTime expiresAt
+    }
+    class Photo {
+        <<entity>>
+        +Long id
+        +Long familyId
+        +Long albumId
+        +String storageKey
+        +String thumbKey
+        +String previewKey
+        +String displayKey
+        +String mimeType
+        +SourceFormat sourceFormat
+        +String displayMimeType
+        +Integer width
+        +Integer height
+        +Integer displayWidth
+        +Integer displayHeight
+        +Long fileSize
+        +Long displayFileSize
+        +BigDecimal latitude
+        +BigDecimal longitude
+        +LocalDateTime takenAt
+        +Long uploadedBy
+    }
+    class PhotoExif {
+        <<entity>>
+        +Long photoId
+        +Boolean hasExif
+        +Boolean exifStripped
+        +ParseStatus parseStatus
+        +Boolean takenAtFromExif
+        +String make
+        +String model
+        +String lensModel
+        +String fNumber
+        +String exposureTime
+        +String iso
+        +String focalLength
+        +String focalLength35mm
+        +String exposureBias
+        +String exposureMode
+        +String meteringMode
+        +String whiteBalance
+        +String flash
+        +Integer orientation
+        +String offsetTimeOriginal
+        +String gpsLatitudeRaw
+        +String gpsLongitudeRaw
+        +BigDecimal gpsAltitude
+        +String originalFileName
+        +String software
+        +LocalDateTime modifyTime
+    }
+    class Role {
+        <<enum>>
+        owner
+        admin
+        member
+    }
+    class JoinStatus {
+        <<enum>>
+        pending
+        approved
+        rejected
+        withdrawn
+        expired
+    }
+    class ParseStatus {
+        <<enum>>
+        ok
+        absent
+        stripped
+        failed
+    }
+    class SourceFormat {
+        <<enum>>
+        jpeg
+        png
+        webp
+        heic
+    }
+
+    class UserPrincipal {
+        <<record>>
+        +Long userId
+        +String email
+        +String nickname
+    }
+    class FamilyContext {
+        <<record>>
+        +Long familyId
+        +Role role
+        +boolean empty
+    }
+    class FamilyContextResolver {
+        <<service>>
+        +read(Long userId) FamilyContext
+        +requireActive() FamilyContext
+        -fallback(Long uid, Long staleId) FamilyContext
+    }
+    class FamilyAccessGuard {
+        <<service>>
+        +principal() UserPrincipal
+        +familyId() Long
+        +role() Role
+        +assertSameFamily(Long resourceFamilyId) void
+        +assertOwner() void
+        +assertAdminOrOwner() void
+        +assertCreatorOrOwner(Long createdBy) void
+        +assertUploaderOrCreatorOrOwner(Long u, Long c) void
+    }
+    class JwtAuthenticationFilter {
+        <<filter>>
+        +doFilterInternal(req, res, chain) void
+        -resolveToken(req) String
+        -isTokenRevoked(iat, validAfter) boolean
+    }
+
+    class AuthService {
+        <<service>>
+        +register(RegisterReq) TokenResp
+        +login(LoginReq) TokenResp
+        +me() MeResp
+        +logout() void
+        +changePassword(...) void
+    }
+    class FamilyCodeService {
+        <<service>>
+        +generate() String
+        +lookup(LookupReq) FamilyLookupResp
+        +reset(Long familyId) FamilyCodeResp
+    }
+    class FamilyService {
+        <<service>>
+        +create(CreateFamilyReq) FamilyResp
+        +get() FamilyResp
+        +update(UpdateFamilyReq) FamilyResp
+        +delete(DeleteFamilyReq) void
+        +listMembers() List~MemberResp~
+        +setRole(Long uid, SetRoleReq) MemberResp
+        +removeMember(Long uid) void
+    }
+    class JoinRequestService {
+        <<service>>
+        +create(CreateJoinReq) JoinRequestResp
+        +mine() OnboardingStateResp
+        +withdraw(Long id) JoinRequestResp
+        +list(Long fid, status, page, size) PageResponse
+        +pendingCount(Long fid) PendingCountResp
+        +approve(Long id) JoinRequestResp
+        +reject(Long id, RejectReq) JoinRequestResp
+    }
+    class SwitchFamilyService {
+        <<service>>
+        +switchTo(SwitchFamilyReq) MeResp
+    }
+    class UploadProgressRegistry {
+        <<service>>
+        +begin(Long userId) void
+        +end(Long userId) void
+        +hasInFlight(Long userId) boolean
+    }
+
+    class HeicTranscoder {
+        <<interface>>
+        +decode(byte[] originalBytes) HeicDecodeResult
+        +isAvailable() boolean
+    }
+    class OpenizeHeicTranscoder {
+        <<service>>
+        -boolean available
+        +decode(byte[] originalBytes) HeicDecodeResult
+        +isAvailable() boolean
+        -applyIrot(raw, irot, imir) BufferedImage
+    }
+    class HeicDecodeResult {
+        <<record>>
+        +BufferedImage image
+        +int width
+        +int height
+        +boolean rotationApplied
+    }
+    class HeicTranscodeException {
+        <<exception>>
+    }
+    class HeicTranscoderProbe {
+        <<service>>
+        +run(ApplicationArguments) void
+    }
+    class HeicProperties {
+        <<config>>
+        +boolean probeOnStartup
+        +int displayMaxEdge
+        +int thumbMaxEdge
+    }
+    class ExifService {
+        <<service>>
+        +readFromOriginal(byte[] bytes) ExifResult
+        +readTakenAt(byte[] bytes) Optional~LocalDateTime~
+    }
+    class ExifResult {
+        <<record>>
+        +ParseStatus parseStatus
+        +String gpsLatitudeRaw
+        +String gpsLongitudeRaw
+        +Map fields
+    }
+    class ImageValidator {
+        <<support>>
+        +validate(byte[] bytes, String fileName) ImageType
+        -sniff(byte[] header) ImageType
+    }
+    class FamilyCodes {
+        <<support>>
+        +generate() String
+    }
+    class PhotoService {
+        <<service>>
+        +upload(List~MultipartFile~ files, Long albumId) PhotoUploadResp
+        -ingestOne(file, familyId, ...) Photo
+        -cleanup(List~String~ writtenKeys) void
+    }
+    class PhotoIngestService {
+        <<service>>
+        +ingest(PhotoDraft draft) Photo
+    }
+    class PhotoDraft {
+        <<record>>
+        +Long familyId
+        +String storageKey
+        +String thumbKey
+        +String previewKey
+        +String displayKey
+        +SourceFormat sourceFormat
+    }
+    class ThumbnailService {
+        <<service>>
+        +generate(String originalKey, String keyBase, ImageType type) ThumbnailResult
+        +generateFrom(HeicDecodeResult r, String keyBase) ThumbnailResult
+    }
+    class StorageService {
+        <<service>>
+        +allocateKey(Long familyId, date, String ext) String
+        +writeBytes(String key, byte[] bytes) void
+        +loadAsResource(String key) Resource
+        +deleteQuietly(String key) void
+    }
+    class FileController {
+        <<controller>>
+        +read(String key) ResponseEntity~Resource~
+    }
+    class ApiResponse {
+        <<record>>
+        +int code
+        +String message
+        +T data
+        +String traceId
+    }
+    class PageResponse {
+        <<record>>
+        +List~T~ items
+        +int page
+        +int size
+        +long total
+        +int totalPages
+        +boolean hasMore
+    }
+
+    User "1" -- "0..1" Family : active_family_id （无 FK，应用层维护）
+    Family "1" -- "1" User : owner_id FK
+    User "1" -- "0..*" FamilyMember : 成员关系（1:N 多家庭）
+    Family "1" -- "0..*" FamilyMember : 成员
+    FamilyMember --> Role : role
+    User "1" -- "0..*" FamilyJoinRequest : 提交申请
+    Family "1" -- "0..*" FamilyJoinRequest : 收到申请
+    FamilyJoinRequest --> JoinStatus : status
+    Family "1" -- "0..*" Photo : family_id（单家庭归属）
+    Photo "1" -- "0..1" PhotoExif : photo_id 1:1 CASCADE
+    Photo --> SourceFormat : sourceFormat
+    PhotoExif --> ParseStatus : parseStatus
+
+    JwtAuthenticationFilter ..> FamilyContextResolver : read() 只读
+    JwtAuthenticationFilter ..> UserPrincipal : 构造纯身份
+    FamilyContextResolver ..> FamilyContext : 产出 / 缓存
+    FamilyAccessGuard ..> FamilyContextResolver : requireActive()
+    AuthService ..> FamilyCodeService : 注册不再用码
+    FamilyService ..> FamilyCodeService : create/reset
+    JoinRequestService ..> FamilyAccessGuard : assertAdminOrOwner()
+    SwitchFamilyService ..> UploadProgressRegistry : hasInFlight()
+    PhotoService ..> ImageValidator : validate()
+    PhotoService ..> ExifService : readFromOriginal()
+    PhotoService ..> HeicTranscoder : decode()
+    PhotoService ..> ThumbnailService : generateFrom()
+    PhotoService ..> PhotoIngestService : ingest()
+    PhotoService ..> StorageService : write/delete
+    PhotoIngestService ..> Photo : 构造
+    PhotoIngestService ..> PhotoExif : 构造
+    ThumbnailService ..> HeicDecodeResult : 消费正立图
+    HeicTranscoder <|.. OpenizeHeicTranscoder : implements
+    OpenizeHeicTranscoder ..> HeicDecodeResult : 返回
+    OpenizeHeicTranscoder ..> HeicTranscodeException : 抛出
+    HeicTranscoderProbe ..> OpenizeHeicTranscoder : 探测 available
+    HeicTranscoderProbe ..> HeicProperties : 读取
+    FileController ..> FamilyAccessGuard : familyId() 归属校验
+    FileController ..> StorageService : loadAsResource()
+    AuthService ..> ApiResponse : 封装
+    JoinRequestService ..> PageResponse : 分页
