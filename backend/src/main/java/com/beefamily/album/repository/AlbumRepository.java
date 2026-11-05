@@ -74,10 +74,39 @@ public interface AlbumRepository extends JpaRepository<Album, Long> {
     Optional<Album> findFirstByFamilyIdAndCoverPhotoId(Long familyId, Long photoId);
 
     /**
+     * 批量找出把某几张照片设为封面的相册。
+     *
+     * <p>先查出来再按主键逐条清，是为了避免 {@code where cover_photo_id in (...)} 这种
+     * **二级索引范围更新**：它会锁住 {@code idx_album_cover_photo} 的范围间隙（包括 supremum），
+     * 与「设封面」按主键 → 二级索引顺序加锁的事务形成环，实测 20 轮并发 20 次死锁。
+     * 改成「主键定位 + 条件置空」后锁粒度只剩被命中的那几行。</p>
+     *
+     * @param familyId 家庭 id
+     * @param photoIds 照片 id 集合
+     * @return 相册列表
+     */
+    List<Album> findByFamilyIdAndCoverPhotoIdIn(Long familyId, Collection<Long> photoIds);
+
+    /**
+     * 清空某个相册的封面引用（仅当它当前确实指向这几张照片之一）。
+     *
+     * @param albumId  相册 id
+     * @param photoIds 被删照片 id 集合
+     * @return 影响行数
+     */
+    @Modifying
+    @Query("update Album a set a.coverPhotoId = null where a.id = :albumId and a.coverPhotoId in :photoIds")
+    int clearCover(@Param("albumId") Long albumId, @Param("photoIds") Collection<Long> photoIds);
+
+    /**
      * 清空指向被删照片的相册封面引用。
      *
      * <p>为什么必须显式清：{@code album.cover_photo_id} 没有外键（§4.3 方案 B），
      * 删照片后 DB 不会自动置 NULL，会留下悬挂引用。</p>
+     *
+     * <p><b>保留但不再由删除流程调用</b>：范围更新会锁二级索引间隙，见
+     * {@link #findByFamilyIdAndCoverPhotoIdIn} 的说明；删除流程改用「先查后按主键清」。
+     * 留着是为了家庭级清理等不需要高并发的场景。</p>
      *
      * @param photoIds 被删照片 id 集合
      * @return 影响行数
@@ -114,6 +143,51 @@ public interface AlbumRepository extends JpaRepository<Album, Long> {
             + "where a.id = :albumId and a.familyId = :familyId and a.photoCount + :delta >= 0")
     int addPhotoCount(@Param("albumId") Long albumId, @Param("familyId") Long familyId,
                       @Param("delta") int delta, @Param("updatedAt") LocalDateTime updatedAt);
+
+    /**
+     * 只写「可编辑元信息」两列（name / description）。
+     *
+     * <p><b>为什么不用实体 save</b>：{@code albumRepository.save(album)} 是 Hibernate 的
+     * **整行 UPDATE**，会把读出来的 {@code photo_count} / {@code cover_photo_id} 一起写回。
+     * 若两次读之间有人上传了照片（{@code addPhotoCount} 原子 +1），这次整行回写就会把计数
+     * 覆盖回旧值（丢失更新），并且因为顺带重写了父行的多列，还会与
+     * {@code PhotoService.deletePhotosBulk} 的外键共享锁互等成死锁（QA P1-③）。
+     * 窄 UPDATE 只碰自己那几列，计数与封面各走各的语句。</p>
+     *
+     * <p>{@code updated_at} 必须显式写：JPQL 批量更新不触发 {@code @PreUpdate}，
+     * 而相册列表按 {@code updated_at} 倒序。</p>
+     *
+     * @param albumId     相册 id
+     * @param familyId    家庭 id
+     * @param name        相册名（已去首尾空格）
+     * @param description 描述
+     * @param updatedAt   新的更新时间
+     * @return 影响行数
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update Album a set a.name = :name, a.description = :description, a.updatedAt = :updatedAt "
+            + "where a.id = :albumId and a.familyId = :familyId")
+    int updateMetadata(@Param("albumId") Long albumId, @Param("familyId") Long familyId,
+                       @Param("name") String name, @Param("description") String description,
+                       @Param("updatedAt") LocalDateTime updatedAt);
+
+    /**
+     * 只写 {@code cover_photo_id} 一列（设为某张照片，或置 null 表示回到兜底封面）。
+     *
+     * <p>同样是窄 UPDATE：不碰 {@code photo_count}，避免与并发上传/删除的计数路径互相覆盖，
+     * 也避免整行 UPDATE 在并发下与删除照片的事务互等。</p>
+     *
+     * @param albumId      相册 id
+     * @param familyId     家庭 id
+     * @param coverPhotoId 封面照片 id，null 表示清除
+     * @param updatedAt    新的更新时间
+     * @return 影响行数
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update Album a set a.coverPhotoId = :coverPhotoId, a.updatedAt = :updatedAt "
+            + "where a.id = :albumId and a.familyId = :familyId")
+    int updateCover(@Param("albumId") Long albumId, @Param("familyId") Long familyId,
+                    @Param("coverPhotoId") Long coverPhotoId, @Param("updatedAt") LocalDateTime updatedAt);
 
     /**
      * 相册总数。

@@ -24,7 +24,6 @@ import java.util.Optional;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,16 +42,19 @@ public class TagService {
 
     private final TagRepository tagRepository;
     private final PhotoTagRepository photoTagRepository;
+    private final TagWriter tagWriter;
 
     /**
      * 构造服务。
      *
      * @param tagRepository      标签仓储
      * @param photoTagRepository 关联仓储
+     * @param tagWriter          标签创建者（独立事务，见 {@link TagWriter} 的类注释）
      */
-    public TagService(TagRepository tagRepository, PhotoTagRepository photoTagRepository) {
+    public TagService(TagRepository tagRepository, PhotoTagRepository photoTagRepository, TagWriter tagWriter) {
         this.tagRepository = tagRepository;
         this.photoTagRepository = photoTagRepository;
+        this.tagWriter = tagWriter;
     }
 
     /**
@@ -164,8 +166,10 @@ public class TagService {
     /**
      * 解析标签名 → 标签实体，缺失则创建。
      *
-     * <p>并发下两个请求可能同时创建同名标签，{@code uk_tag_family_name} 会让其中一个失败；
-     * 这里捕获唯一键冲突后回查，把「并发去重」交给数据库而不是加锁。</p>
+     * <p><b>并发去重交给数据库</b>：{@code uk_tag_family_name} 保证家庭内同名标签只有一行。
+     * 这里把「插入 + 回查」整体委托给 {@link TagWriter} 的 {@code REQUIRES_NEW} 独立事务：
+     * 一是避免失败的 flush 把 id 为 null 的实体留在调用方 session 里（{@code AssertionFailure}），
+     * 二是新事务的读视图能看到并发对手刚提交的行（REPEATABLE READ 下调用方快照看不到）。</p>
      *
      * @param familyId 家庭 id
      * @param names    已规范化的标签名（有序）
@@ -177,16 +181,7 @@ public class TagService {
         for (String name : names) {
             Tag tag = tagRepository.findByFamilyIdAndName(familyId, name).orElse(null);
             if (tag == null) {
-                Tag created = new Tag();
-                created.setFamilyId(familyId);
-                created.setName(name);
-                try {
-                    tag = tagRepository.saveAndFlush(created);
-                } catch (DataIntegrityViolationException ex) {
-                    log.debug("tag race detected name={}", name);
-                    tag = tagRepository.findByFamilyIdAndName(familyId, name)
-                            .orElseThrow(() -> new BusinessException(ErrorCode.INTERNAL_ERROR));
-                }
+                tag = tagWriter.createOrFind(familyId, name);
             }
             result.put(name, tag);
         }

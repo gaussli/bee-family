@@ -19,6 +19,7 @@ import com.beefamily.album.repository.PhotoRepository;
 import com.beefamily.album.repository.UserRepository;
 import com.beefamily.album.security.FamilyAccessGuard;
 import com.beefamily.album.security.SecurityUtils;
+import com.beefamily.album.support.DateTimes;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -139,6 +140,11 @@ public class AlbumService {
     /**
      * 更新相册（仅创建者或 owner）。
      *
+     * <p><b>为什么不再 {@code albumRepository.save(album)}</b>：整行 UPDATE 会把读出来的
+     * {@code photo_count} 一起写回，并发上传刚 {@code +1} 的计数会被这次编辑覆盖掉
+     * （丢失更新）；窄 UPDATE 只改 name/description 与 cover 两处，计数永远由
+     * {@code PhotoService#applyAlbumCountDeltas} 的原子自增维护。</p>
+     *
      * @param id  相册 id
      * @param req 请求
      * @return 相册响应
@@ -149,19 +155,37 @@ public class AlbumService {
         Album album = requireAlbum(id, familyId);
         guard.assertCreatorOrOwner(album.getCreatedBy());
 
+        String name = album.getName();
         if (req.name() != null) {
-            String name = req.name().trim();
-            if (!name.equals(album.getName())) {
-                if (albumRepository.existsByFamilyIdAndName(familyId, name)) {
+            String trimmed = req.name().trim();
+            if (!trimmed.equals(name)) {
+                if (albumRepository.existsByFamilyIdAndName(familyId, trimmed)) {
                     throw new BusinessException(ErrorCode.ALBUM_NAME_DUPLICATED);
                 }
-                album.setName(name);
+                name = trimmed;
             }
         }
-        album.setDescription(req.description());
-        applyCover(album, req.coverPhotoId(), familyId);
-        Album saved = albumRepository.save(album);
-        return toRespWithCover(saved, familyId, nicknameOf(saved.getCreatedBy()));
+        boolean metaChanged = !Objects.equals(name, album.getName())
+                || !Objects.equals(req.description(), album.getDescription());
+
+        // 封面校验必须先做：它要读 photo 行，而下面的窄 UPDATE 会 clear 持久化上下文
+        Long coverPhotoId = req.coverPhotoId();
+        boolean coverChanged = !Objects.equals(album.getCoverPhotoId(), coverPhotoId);
+        if (coverChanged) {
+            validateCover(album.getId(), coverPhotoId, familyId);
+        }
+
+        if (metaChanged || coverChanged) {
+            LocalDateTime now = DateTimes.now();
+            if (metaChanged) {
+                albumRepository.updateMetadata(album.getId(), familyId, name, req.description(), now);
+            }
+            if (coverChanged) {
+                albumRepository.updateCover(album.getId(), familyId, coverPhotoId, now);
+            }
+            album = requireAlbum(id, familyId);
+        }
+        return toRespWithCover(album, familyId, nicknameOf(album.getCreatedBy()));
     }
 
     /**
@@ -207,24 +231,25 @@ public class AlbumService {
     }
 
     /**
-     * 设置封面：必须是本相册内的照片。
+     * 校验封面候选：必须是本家庭、本相册内的照片。
      *
-     * @param album        相册
-     * @param coverPhotoId 封面照片 id
+     * <p>只做校验不写库——写入由 {@link AlbumRepository#updateCover} 这条窄 UPDATE 完成，
+     * 避免把整个相册实体读出来再整行回写。</p>
+     *
+     * @param albumId      相册 id
+     * @param coverPhotoId 封面照片 id（null 表示清除，无需校验）
      * @param familyId     家庭 id
      */
-    private void applyCover(Album album, Long coverPhotoId, Long familyId) {
+    private void validateCover(Long albumId, Long coverPhotoId, Long familyId) {
         if (coverPhotoId == null) {
             // null = 清除自定义封面，回到「取相册内最新照片」兜底
-            album.setCoverPhotoId(null);
             return;
         }
         Photo photo = photoRepository.findByIdAndFamilyId(coverPhotoId, familyId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.CROSS_FAMILY_ACCESS));
-        if (!Objects.equals(photo.getAlbumId(), album.getId())) {
+        if (!Objects.equals(photo.getAlbumId(), albumId)) {
             throw new BusinessException(ErrorCode.INVALID_ARGUMENT, "封面只能选择本相册内的照片");
         }
-        album.setCoverPhotoId(coverPhotoId);
     }
 
     /**

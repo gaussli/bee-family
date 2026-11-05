@@ -89,6 +89,25 @@ public interface TagRepository extends JpaRepository<Tag, Long> {
     List<Tag> findByIdInAndFamilyId(Collection<Long> ids, Long familyId);
 
     /**
+     * 幂等插入标签：已存在则原地不动（只把 {@code id} 赋回自身，MySQL 视为「无变化」，
+     * 因此不会触发 {@code updated_at ON UPDATE}，符合「标签行只增不删、不改旧行」的约定）。
+     *
+     * <p><b>为什么不用「先 insert 再 catch 唯一键冲突」</b>：那条路每次并发都必然产生一次
+     * 主键冲突、一次事务回滚，而且 Hibernate 的 {@code SqlExceptionHelper} 会先打一条
+     * {@code ERROR Duplicate entry ...} 日志 —— 对「可预期」的并发是纯噪声（实测 10 并发刷 8 条
+     * ERROR），还会误导运维告警。{@code ON DUPLICATE KEY UPDATE} 不抛异常、不产生 ERROR 日志。</p>
+     *
+     * @param familyId 家庭 id
+     * @param name     标签名（已规范化）
+     * @return 影响行数：1 = 新插入，0 = 已存在
+     */
+    @Modifying
+    @Query(value = "insert into tag (family_id, name, created_at, updated_at) "
+            + "values (:familyId, :name, now(), now()) "
+            + "on duplicate key update id = last_insert_id(id)", nativeQuery = true)
+    int insertIfAbsent(@Param("familyId") Long familyId, @Param("name") String name);
+
+    /**
      * 删除家庭全部标签（删除家庭第 7 步）。
      *
      * @param familyId 家庭 id

@@ -8,6 +8,7 @@ import com.beefamily.album.domain.Album;
 import com.beefamily.album.domain.Photo;
 import com.beefamily.album.dto.photo.BatchMoveReq;
 import com.beefamily.album.dto.photo.BatchResultResp;
+import com.beefamily.album.dto.photo.PatchField;
 import com.beefamily.album.dto.photo.PhotoDetailResp;
 import com.beefamily.album.dto.photo.PhotoQuery;
 import com.beefamily.album.dto.photo.PhotoResp;
@@ -217,7 +218,11 @@ public class PhotoService {
     }
 
     /**
-     * 更新照片（PATCH 全量提交；{@code tags} 为完整集合语义）。
+     * 更新照片（PATCH）。
+     *
+     * <p><b>{@code albumId} 是三态字段</b>（{@link PatchField}）：字段缺席 = 这次编辑与相册无关，
+     * 显式 {@code null} = 移到未分类，数字 = 移到该相册。之前把「缺席」也当成 {@code null} 处理，
+     * 导致「只改标题」会把照片静默踢出相册、相册计数 -1（QA P1-①）。</p>
      *
      * @param id  照片 id
      * @param req 请求
@@ -237,17 +242,22 @@ public class PhotoService {
             photo.setTakenAt(req.takenAt());
         }
 
-        Long targetAlbumId = req.albumId();
-        if (!Objects.equals(photo.getAlbumId(), targetAlbumId)) {
-            if (targetAlbumId != null) {
-                // 跨家庭/不存在的相册统一 40907（「目标相册不存在或无权访问」）
-                requireAlbumForMove(targetAlbumId, familyId);
+        PatchField<Long> albumPatch = req.albumId();
+        if (albumPatch != null && albumPatch.isPresent()) {
+            Long targetAlbumId = toAlbumId(albumPatch.value());
+            if (!Objects.equals(photo.getAlbumId(), targetAlbumId)) {
+                if (targetAlbumId != null) {
+                    // 跨家庭/不存在的相册统一 40907（「目标相册不存在或无权访问」）
+                    requireAlbumForMove(targetAlbumId, familyId);
+                }
+                Map<Long, Integer> deltas = new LinkedHashMap<>();
+                deltas.merge(photo.getAlbumId() == null ? -1L : photo.getAlbumId(), -1, Integer::sum);
+                deltas.merge(targetAlbumId == null ? -1L : targetAlbumId, 1, Integer::sum);
+                photo.setAlbumId(targetAlbumId);
+                // 先改计数再写 photo：photo 的 UPDATE 会给目标相册加外键共享锁，
+                // 反过来做就是 S→X 锁升级（与上传路径同一个根因）
+                applyAlbumCountDeltas(familyId, deltas);
             }
-            Map<Long, Integer> deltas = new LinkedHashMap<>();
-            deltas.merge(photo.getAlbumId() == null ? -1L : photo.getAlbumId(), -1, Integer::sum);
-            deltas.merge(targetAlbumId == null ? -1L : targetAlbumId, 1, Integer::sum);
-            photo.setAlbumId(targetAlbumId);
-            applyAlbumCountDeltas(familyId, deltas);
         }
 
         Photo saved = photoRepository.save(photo);
@@ -256,6 +266,32 @@ public class PhotoService {
                 : tagService.applyToPhoto(familyId, saved.getId(), req.tags());
         return PhotoMapper.toResp(saved, albumNameOf(saved.getAlbumId(), familyId), tags,
                 babyService.nicknameOf(saved.getUploadedBy()));
+    }
+
+    /**
+     * 把三态字段里的值转成相册 id。
+     *
+     * <p>反序列化时泛型信息理论上能拿到 {@code Long}，但 record 组件偶发退化为 {@code Object}，
+     * 这里统一按 {@link Number} 兜底，避免 {@code ClassCastException} 冒成 500。</p>
+     *
+     * @param value 原始值
+     * @return 相册 id，null 表示移到未分类
+     */
+    private Long toAlbumId(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Long.valueOf(text.trim());
+            } catch (NumberFormatException ex) {
+                throw new BusinessException(ErrorCode.INVALID_PARAM, "albumId 必须是数字");
+            }
+        }
+        throw new BusinessException(ErrorCode.INVALID_PARAM, "albumId 必须是数字");
     }
 
     /**
@@ -323,9 +359,13 @@ public class PhotoService {
     /**
      * 删除照片及其全部关联（供本服务与 {@link AlbumService} 复用）。
      *
-     * <p>执行顺序：photo_tag → 相册封面 → 家庭封面 → 相册计数 → photo 行 → afterCommit 删 3 个文件。
-     * {@code album.cover_photo_id} 与 {@code family.cover_photo_id} 没有外键，必须显式清理，
-     * 否则会留下指向已删照片的悬挂引用（§4.3）。</p>
+     * <p>执行顺序：photo_tag → 相册计数（主键行锁）→ 相册封面 → 家庭封面 → photo 行
+     * → afterCommit 删 3 个文件。{@code album.cover_photo_id} 与 {@code family.cover_photo_id}
+     * 没有外键，必须显式清理，否则会留下指向已删照片的悬挂引用（§4.3）。</p>
+     *
+     * <p><b>顺序不是随便排的</b>：所有相册写操作都按「主键 → 二级索引」的固定顺序加锁，
+     * 与 {@code AlbumService} 的设封面路径同序，否则 InnoDB 会在
+     * {@code PRIMARY} 行锁与 {@code idx_album_cover_photo} 间隙锁之间形成环。</p>
      *
      * @param familyId 家庭 id
      * @param photos   照片实体列表
@@ -337,8 +377,6 @@ public class PhotoService {
         }
         List<Long> ids = photos.stream().map(Photo::getId).toList();
         photoTagRepository.deleteByPhotoIdIn(ids);
-        albumRepository.clearCoverByPhotoIds(ids);
-        photoRepository.clearFamilyCoverByPhotoIds(ids);
 
         Map<Long, Integer> deltas = new LinkedHashMap<>();
         for (Photo photo : photos) {
@@ -346,7 +384,12 @@ public class PhotoService {
                 deltas.merge(photo.getAlbumId(), -1, Integer::sum);
             }
         }
+        // 加锁顺序必须与「设封面」路径一致：先按主键拿相册行锁，再改二级索引。
+        // 反过来的话，范围更新锁住了 idx_album_cover_photo 的间隙，另一侧是先主键后索引，
+        // 两边互等 → 实测「设封面 × 删同一张照片」20 轮 20 次死锁（P1-③）。
         applyAlbumCountDeltas(familyId, deltas);
+        clearAlbumCovers(familyId, ids);
+        photoRepository.clearFamilyCoverByPhotoIds(ids);
 
         photoRepository.deleteAll(photos);
 
@@ -538,6 +581,24 @@ public class PhotoService {
             throw new BusinessException(ErrorCode.CROSS_FAMILY_ACCESS);
         }
         return photos;
+    }
+
+    /**
+     * 清空指向被删照片的相册封面。
+     *
+     * <p>先按 {@code family_id + cover_photo_id} 查出受影响的相册，再逐条按主键条件置空，
+     * 而不是一条 {@code update album set cover_photo_id = null where cover_photo_id in (...)}：
+     * 后者是二级索引范围更新，会锁住 {@code idx_album_cover_photo} 的范围间隙（含 supremum），
+     * 与「设封面」的加锁顺序形成环（QA P1-③，实测 20 轮 20 次死锁）。</p>
+     *
+     * @param familyId 家庭 id
+     * @param photoIds 被删照片 id
+     */
+    private void clearAlbumCovers(Long familyId, List<Long> photoIds) {
+        List<Album> covered = albumRepository.findByFamilyIdAndCoverPhotoIdIn(familyId, photoIds);
+        for (Album album : covered) {
+            albumRepository.clearCover(album.getId(), photoIds);
+        }
     }
 
     /**
