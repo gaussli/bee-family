@@ -4,7 +4,8 @@ import { defineConfig } from 'vite'
 
 /**
  * Vite 配置：@ 别名指向 src（与 tsconfig 的 paths 保持同步），
- * 开发期把 /api 代理到后端 8080，避免任何跨域配置。
+ * 开发期把 /api 代理到后端 8080，避免任何跨域配置。后端跑在其他端口时可用
+ * `VITE_API_TARGET=http://127.0.0.1:18080 npm run dev` 覆盖（视觉回归脚本常用独立端口）。
  */
 export default defineConfig({
   plugins: [vue()],
@@ -17,7 +18,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: process.env.VITE_API_TARGET ?? 'http://localhost:8080',
         changeOrigin: true,
       },
     },
