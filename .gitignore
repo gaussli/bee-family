@@ -1,0 +1,37 @@
+# ---------- 依赖与构建产物 ----------
+node_modules/
+dist/
+target/
+*.iml
+.idea/
+.vscode/
+*.class
+
+# ---------- 系统 / 日志 ----------
+.DS_Store
+*.log
+logs/
+
+# ---------- 环境变量（.env.example 与各环境固定配置文件允许提交）----------
+.env
+.env.*
+!.env.example
+!.env.development
+!.env.production
+
+# ---------- 后端本地配置（含真实口令，绝不提交）----------
+application-local.yml
+backend/src/main/resources/application-local.yml
+
+# ---------- 运行时上传数据 ----------
+backend/data/
+data/uploads/
+
+# ---------- 仅用于本机构建的 Maven 本地仓库 ----------
+.m2repo/
+
+# ---------- 不支持的图片格式样张 ----------
+*.heic
+*.HEIC
+*.heif
+*.HEIF

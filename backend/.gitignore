@@ -1,0 +1,15 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# 本地真实配置（含数据库口令），仅提交 application-local.yml.example
+src/main/resources/application-local.yml
+
+# 运行期上传目录
+data/
+../data/uploads/
+
+*.log
+logs/
+.DS_Store
+*.iml
+.idea/

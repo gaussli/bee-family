@@ -1,0 +1,77 @@
+server:
+  port: 8080
+  error:
+    include-stacktrace: never
+    include-message: never
+  tomcat:
+    # 与 multipart 上限对齐，避免超限请求被 Tomcat 静默断开导致客户端拿到空响应
+    max-swallow-size: 2100MB
+
+spring:
+  application:
+    name: bee-family
+  datasource:
+    # 无默认账号/口令：缺失环境变量时启动失败，避免误连非预期数据库
+    url: ${DB_URL:jdbc:mysql://localhost:3306/bee_family?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    hikari:
+      pool-name: bee-family-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 10000
+  jpa:
+    # 表结构唯一权威是 Flyway；validate 让实体与 DDL 漂移在启动时立刻暴露
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: Asia/Shanghai
+        format_sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: false
+    locations: classpath:db/migration
+  servlet:
+    multipart:
+      # 单文件上限刻意放宽到与请求上限一致，把「单张 20MB」的判定交给 service 层：
+      # 若在此处限制 20MB，任何一个超限分片都会让整个 multipart 请求解析失败（MaxUploadSizeExceededException），
+      # 无法满足 §10 T11-③「混合上传 1 正常 + 1 超限 + 1 个 HEIC → successCount:1/failureCount:2」的逐张失败语义。
+      # service 层仍用 Limits.MAX_FILE_SIZE_BYTES(20MB) 逐张校验并返回 41301。
+      max-file-size: 2100MB
+      max-request-size: 2100MB
+  jackson:
+    time-zone: Asia/Shanghai
+    # 全量输出 null（前端用 T | null 精确建模，禁止 NON_NULL 裁剪）
+    default-property-inclusion: always
+    generator:
+      write-bigdecimal-as-plain: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+app:
+  jwt:
+    # 开发期默认值仅供本地跑通；生产部署必须用 JWT_SECRET 覆盖为 >= 32 字节的随机串
+    secret: ${JWT_SECRET:bee-family-dev-only-secret-please-override-with-32bytes-random}
+    ttl: 7d
+  storage:
+    root: ${STORAGE_ROOT:./data/uploads}
+  cors:
+    allowed-origins: ${CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+
+logging:
+  level:
+    root: INFO
+    com.beefamily.album: INFO
+    org.hibernate.orm.deprecation: ERROR
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{traceId:-}] %logger{36} - %msg%n"
