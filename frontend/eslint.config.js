@@ -12,7 +12,7 @@ import tseslint from 'typescript-eslint'
  */
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'docs/screenshots/**'],
+    ignores: ['dist/**', 'dist-qa/**', 'node_modules/**', 'coverage/**', 'docs/screenshots/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -55,6 +55,13 @@ export default tseslint.config(
     files: ['vite.config.ts', 'eslint.config.js'],
     rules: {
       '@typescript-eslint/consistent-type-imports': 'off',
+    },
+  },
+  {
+    // 纯函数验证脚本是 CLI 工具，console 输出就是它的交付物（PASS/FAIL 汇总）。
+    files: ['scripts/**/*.mjs'],
+    rules: {
+      'no-console': 'off',
     },
   },
 )
