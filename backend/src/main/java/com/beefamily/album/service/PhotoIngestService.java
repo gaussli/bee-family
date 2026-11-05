@@ -1,10 +1,12 @@
 package com.beefamily.album.service;
 
-import com.beefamily.album.domain.Album;
+import com.beefamily.album.common.BusinessException;
+import com.beefamily.album.common.ErrorCode;
 import com.beefamily.album.domain.Photo;
 import com.beefamily.album.domain.enums.MediaType;
 import com.beefamily.album.repository.AlbumRepository;
 import com.beefamily.album.repository.PhotoRepository;
+import com.beefamily.album.support.DateTimes;
 import java.time.LocalDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,11 +46,24 @@ public class PhotoIngestService {
     /**
      * 写入照片记录，并在**同一事务内**维护相册冗余计数。
      *
+     * <p><b>顺序很重要</b>：先做相册计数的原子 UPDATE（拿到 album 行的排他锁），再 INSERT photo。
+     * 反过来写（先 INSERT，靠外键校验拿到 album 的共享锁，再改计数升级成排他锁）在并发上传时
+     * 会稳定死锁，详见 {@link AlbumRepository#addPhotoCount}。同一事务内顺序颠倒不会破坏语义：
+     * 任何一步失败都会整体回滚。</p>
+     *
      * @param draft 照片草稿（文件已落盘）
      * @return 已入库的照片实体
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Photo ingest(PhotoDraft draft) {
+        if (draft.albumId() != null) {
+            int affected = albumRepository.addPhotoCount(draft.albumId(), draft.familyId(), 1, DateTimes.now());
+            if (affected == 0) {
+                // 相册不存在 / 不属于本家庭 / 已被并发删除：不能静默吞掉，否则照片会挂在已删相册上
+                throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "目标相册不存在或已被删除");
+            }
+        }
+
         Photo photo = new Photo();
         photo.setFamilyId(draft.familyId());
         photo.setAlbumId(draft.albumId());
@@ -64,25 +79,9 @@ public class PhotoIngestService {
         photo.setUploadedBy(draft.uploadedBy());
         Photo saved = photoRepository.save(photo);
 
-        if (draft.albumId() != null) {
-            albumRepository.findById(draft.albumId()).ifPresent(album -> {
-                album.setPhotoCount(safeCount(album) + 1);
-                albumRepository.save(album);
-            });
-        }
         log.debug("photo ingested id={} familyId={} albumId={}", saved.getId(), saved.getFamilyId(),
                 saved.getAlbumId());
         return saved;
-    }
-
-    /**
-     * 计数字段空值保护。
-     *
-     * @param album 相册
-     * @return 当前计数
-     */
-    private int safeCount(Album album) {
-        return album.getPhotoCount() == null ? 0 : album.getPhotoCount();
     }
 
     /**

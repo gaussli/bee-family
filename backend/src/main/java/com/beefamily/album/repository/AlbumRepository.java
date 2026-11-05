@@ -1,6 +1,7 @@
 package com.beefamily.album.repository;
 
 import com.beefamily.album.domain.Album;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -84,6 +85,35 @@ public interface AlbumRepository extends JpaRepository<Album, Long> {
     @Modifying
     @Query("update Album a set a.coverPhotoId = null where a.coverPhotoId in :photoIds")
     int clearCoverByPhotoIds(@Param("photoIds") Collection<Long> photoIds);
+
+    /**
+     * 原子加减相册冗余计数（唯一写入口）。
+     *
+     * <p><b>为什么必须是单条 UPDATE，而不是「读出来 +1 再 save」</b>：上传事务里原本是
+     * 先 {@code INSERT photo}（InnoDB 为校验外键会对 album 父行加共享锁）、再
+     * {@code findById + setPhotoCount + save}（Hibernate 会整行 UPDATE，需要把共享锁升级成排他锁）。
+     * 两个并发上传各自持有共享锁又都要升级，就互等成死锁 —— 实测同一相册 3 并发 × 5 轮，
+     * 15 次上传失败 9 次，栈是
+     * {@code Deadlock found when trying to get lock ... update album set cover_photo_id=?,...,photo_count=? where id=?}。
+     * 改成单条自增 SQL 后既没有「读-改-写」（不会丢更新），也不会顺带重写 name/description/cover 整行。</p>
+     *
+     * <p><b>负零守卫</b>：{@code photo_count + :delta >= 0} 保证任何调用顺序都不会把计数减成负数；
+     * 命中 0 行时由调用方区分「相册不存在」与「已经减到 0」。</p>
+     *
+     * <p><b>为什么显式写 updated_at</b>：JPQL 批量更新不会触发实体的 {@code @PreUpdate}，
+     * 而相册列表按 {@code updated_at} 倒序（PRD P0-06④），必须手动带上。</p>
+     *
+     * @param albumId   相册 id
+     * @param familyId  家庭 id（跨家庭的相册不会被命中）
+     * @param delta     增量（正数加、负数减）
+     * @param updatedAt 新的更新时间
+     * @return 影响行数；0 表示相册不存在 / 不属于该家庭 / 减法会把计数减成负数
+     */
+    @Modifying
+    @Query("update Album a set a.photoCount = a.photoCount + :delta, a.updatedAt = :updatedAt "
+            + "where a.id = :albumId and a.familyId = :familyId and a.photoCount + :delta >= 0")
+    int addPhotoCount(@Param("albumId") Long albumId, @Param("familyId") Long familyId,
+                      @Param("delta") int delta, @Param("updatedAt") LocalDateTime updatedAt);
 
     /**
      * 相册总数。

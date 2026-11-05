@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -311,8 +312,10 @@ public class PhotoService {
             photo.setAlbumId(req.albumId());
             moved++;
         }
-        photoRepository.saveAll(photos);
+        // 先改计数再写 photo：photo 的 UPDATE 会为新相册加外键共享锁，
+        // 若此时再去升级 album 行的排他锁就会死锁（与上传路径同一个根因）
         applyAlbumCountDeltas(familyId, deltas);
+        photoRepository.saveAll(photos);
         log.info("batch move familyId={} moved={} targetAlbumId={}", familyId, moved, req.albumId());
         return new BatchResultResp(null, moved);
     }
@@ -433,9 +436,33 @@ public class PhotoService {
         PhotoIngestService.PhotoDraft draft = new PhotoIngestService.PhotoDraft(familyId, albumId, storageKey,
                 thumbKey, previewKey, type.getMimeType(), file.getSize(), width, height, takenAt,
                 principal.userId());
-        Photo photo = photoIngestService.ingest(draft);
+        Photo photo = ingestWithRetry(draft);
         log.debug("photo uploaded album={} key={}", albumName, storageKey);
         return photo;
+    }
+
+    /**
+     * 入库并对「锁冲突」重试一次。
+     *
+     * <p>原子计数已经消除了实测到的死锁路径，但 InnoDB 仍可能因间隙锁/唯一索引在极端并发下
+     * 回滚一次事务。这类异常（{@code DeadlockLoserDataAccessException} /
+     * {@code CannotAcquireLockException}，共同父类是 {@link PessimisticLockingFailureException}）
+     * 是**可重试**的，而原来它被 {@code catch (Exception)} 吞成了 50002，用户只能手动点重试。</p>
+     *
+     * <p>重试粒度是「这一张照片的入库事务」，不是整批：文件已经落盘，重试只重跑 DB 部分，
+     * 不会重复写文件。</p>
+     *
+     * @param draft 照片草稿
+     * @return 已入库的照片
+     */
+    private Photo ingestWithRetry(PhotoIngestService.PhotoDraft draft) {
+        try {
+            return photoIngestService.ingest(draft);
+        } catch (PessimisticLockingFailureException ex) {
+            log.warn("ingest lock conflict, retrying once albumId={} storageKey={} cause={}", draft.albumId(),
+                    draft.storageKey(), ex.getClass().getSimpleName());
+            return photoIngestService.ingest(draft);
+        }
     }
 
     /**
@@ -514,22 +541,29 @@ public class PhotoService {
     }
 
     /**
-     * 应用相册计数增量（负数即减）。
+     * 应用相册计数增量（负数即减），**单条原子 UPDATE**。
+     *
+     * <p>原来这里是 {@code findById + setPhotoCount + save}：一次整行 UPDATE，既可能丢更新，
+     * 又会和并发上传的 INSERT（外键共享锁）互等成死锁。改为 {@link AlbumRepository#addPhotoCount}
+     * 的原子自增/自减后，同一相册的并发增删只会按行锁串行，不会再死锁。</p>
      *
      * @param familyId 家庭 id
      * @param deltas   相册 id → 增量（-1L 键表示「未分类」，无计数需要维护）
      */
     private void applyAlbumCountDeltas(Long familyId, Map<Long, Integer> deltas) {
+        LocalDateTime now = DateTimes.now();
         for (Map.Entry<Long, Integer> entry : deltas.entrySet()) {
             Long albumId = entry.getKey();
             if (albumId == null || albumId < 0 || entry.getValue() == 0) {
                 continue;
             }
-            albumRepository.findByIdAndFamilyId(albumId, familyId).ifPresent(album -> {
-                int current = album.getPhotoCount() == null ? 0 : album.getPhotoCount();
-                album.setPhotoCount(Math.max(0, current + entry.getValue()));
-                albumRepository.save(album);
-            });
+            int affected = albumRepository.addPhotoCount(albumId, familyId, entry.getValue(), now);
+            if (affected == 0) {
+                // 减法被 photo_count >= 0 守卫挡住（计数本来就已经是 0）或相册已不存在：
+                // 属于可自愈的计数漂移，记 WARN 但不打断业务
+                log.warn("album photo_count unchanged albumId={} delta={} familyId={}", albumId,
+                        entry.getValue(), familyId);
+            }
         }
     }
 
