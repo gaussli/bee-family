@@ -506,7 +506,9 @@ onMounted(async () => {
 .bee-growth-view__section-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* 标题、计数与操作左对齐成组：此前 space-between 把「+ 记录」推到右列末端，
+     视觉上既不像属于「里程碑」也不像属于「测量记录」。 */
+  justify-content: flex-start;
   gap: var(--sp-3);
   margin-bottom: var(--sp-3);
 }

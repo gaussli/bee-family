@@ -478,10 +478,20 @@ onBeforeUnmount(() => {
   gap: var(--sp-2);
   height: 88px;
   padding: var(--sp-3) var(--sp-2);
+  padding-inline-end: var(--sp-6);
   flex: none;
   overflow-x: auto;
+  /* 右端渐变收口：横向滚动时最后一张缩略图不会以「被切一半」的形态硬贴边界。
+     只用 alpha 渐变，不引入任何调色板之外的硬编码色值。 */
+  -webkit-mask-image: linear-gradient(to right, rgba(0, 0, 0, 1) calc(100% - 32px), rgba(0, 0, 0, 0) 100%);
+  mask-image: linear-gradient(to right, rgba(0, 0, 0, 1) calc(100% - 32px), rgba(0, 0, 0, 0) 100%);
+  scrollbar-width: none;
   background: var(--bg-elevated);
   border-top: 1px solid var(--border-subtle);
+}
+
+.bee-lightbox__strip::-webkit-scrollbar {
+  display: none;
 }
 
 .bee-lightbox__thumb {
