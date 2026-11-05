@@ -27,6 +27,11 @@
     <thumbnailator.version>0.4.20</thumbnailator.version>
     <metadata-extractor.version>2.19.0</metadata-extractor.version>
     <lombok.version>1.18.34</lombok.version>
+    <!--
+      默认排除的测试 Tag。可通过 -Dqa.excludedGroups=none 覆盖（用来显式跑需要真实 MySQL 的用例）。
+      做成属性而不是字面量，是因为 Maven 的 -D 无法覆盖 POM 里写死的 plugin 参数。
+    -->
+    <qa.excludedGroups>mysql</qa.excludedGroups>
   </properties>
 
   <dependencies>
@@ -139,6 +144,20 @@
               <artifactId>lombok</artifactId>
             </exclude>
           </excludes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!--
+            默认排除 @Tag("mysql") 用例，保证 `mvn test` 在无 MySQL、无任何密钥的机器上也一条命令跑通。
+            显式运行方式（需要真实 MySQL）：
+              DB_USERNAME=root DB_PASSWORD=root \
+              mvn test -Dgroups=mysql -DexcludedGroups= -Dqa.excludedGroups=none
+          -->
+          <excludedGroups>${qa.excludedGroups}</excludedGroups>
+          <failIfNoSpecifiedTests>false</failIfNoSpecifiedTests>
         </configuration>
       </plugin>
       <plugin>
