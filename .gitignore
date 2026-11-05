@@ -29,6 +29,9 @@ backend/src/main/resources/application-local.yml
 backend/data/
 data/uploads/
 
+# ---------- 本机会话工作记录（非交付物） ----------
+.workbuddy/
+
 # ---------- 仅用于本机构建的 Maven 本地仓库 ----------
 .m2repo/
 
