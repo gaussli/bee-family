@@ -6,17 +6,21 @@
 # 不做业务断言细节（那是 §10 验收脚本的职责），只看链路是否健康。
 #
 # 用法：
-#   docs/api-smoke.sh                       # 默认 http://localhost:8080/api
+#   EMAIL=<你的邮箱> PASSWORD=<你的密码> docs/api-smoke.sh
 #   BASE_URL=http://localhost:5173/api docs/api-smoke.sh   # 顺带验证 Vite 代理
-#   EMAIL=mom@home.local PASSWORD=Bee123456 docs/api-smoke.sh
 #
-# 依赖：bash / curl / python3（仅用于生成随机邮箱与解析 id）
+# 说明：
+#   - 口令**没有默认值**，必须由环境变量传入（仓库里不落任何口令）。
+#   - EMAIL 可选，默认 mom@home.local；该账号不存在时会自动注册一个随机邮箱。
+#
+# 依赖：bash / curl / 以下之一用于解析 JSON：python3 或 jq
+#       （两者都没有时退化为 grep/sed，可能不稳，脚本会打印提示）
 
 set -uo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8080/api}"
 EMAIL="${EMAIL:-mom@home.local}"
-PASSWORD="${PASSWORD:-Bee123456}"
+PASSWORD="${PASSWORD:?用法：EMAIL=<你的邮箱> PASSWORD=<你的密码> docs/api-smoke.sh}"
 
 PASS=0
 FAIL=0
@@ -30,9 +34,40 @@ MILESTONE_ID=""
 GROWTH_ID=""
 UPLOAD_KEY=""
 
-tmp_body="$(mktemp -t beesmoke-body.XXXXXX)"
-tmp_head="$(mktemp -t beesmoke-head.XXXXXX)"
-trap 'rm -f "$tmp_body" "$tmp_head"' EXIT
+# ---------------------------------------------------------------------------
+# JSON 解析后端探测
+# ---------------------------------------------------------------------------
+# 为什么不用 here-document 方式调用 python3：它需要创建一个临时文件，在受限环境
+# （TMPDIR 不可写）里会直接失败：cannot create temp file for here document。
+# 全部改为 `python3 -c '...'` 与 `jq -r`，不落任何临时文件。
+if command -v python3 >/dev/null 2>&1; then
+  JSON_TOOL="python3"
+elif command -v jq >/dev/null 2>&1; then
+  JSON_TOOL="jq"
+else
+  JSON_TOOL=""
+  printf '%s\n' "提示：未找到 python3 / jq，JSON 解析退化为 grep 兜底（结果可能不稳）" >&2
+fi
+
+# 8×8 纯色 PNG 的 base64（与 python3 分支生成的字节完全一致），
+# 供「没有 python3」的环境解码用，避免依赖仓库里的样例图。
+SAMPLE_PNG_B64="iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR42mN4MUsbK2IYWhIAF35rQbgFoVQAAAAASUVORK5CYII="
+
+# 可写的临时文件路径：优先 mktemp，退化为 $TMPDIR，再退化为当前目录
+new_tmp() {
+  local name="$1" path
+  path="$(mktemp -t "$name" 2>/dev/null)" || path=""
+  if [ -z "$path" ] && [ ! -e "$path" ]; then
+    path="${TMPDIR:-/tmp}/$name-$$"
+    : >"$path" 2>/dev/null || path="./$name-$$"
+    : >"$path" 2>/dev/null || path="/dev/null"
+  fi
+  printf '%s' "$path"
+}
+
+tmp_body="$(new_tmp beesmoke-body)"
+SAMPLE_IMAGE="$(new_tmp beesmoke-image)"
+trap 'rm -f "$tmp_body" "$SAMPLE_IMAGE" 2>/dev/null || true' EXIT
 
 # ---------------------------------------------------------------------------
 # 工具函数
@@ -50,36 +85,73 @@ ng() {
   printf "  %s %s  <-- %s\n" "$(color 31 "FAIL")" "$1" "$2"
 }
 
-# 从 JSON 里取字符串字段（不依赖 jq）
+# 从 JSON 的 data 对象里取字符串字段（$1=json $2=字段名）
 json_str() {
-  python3 - "$1" "$2" <<'PY'
-import json, sys
-raw, key = sys.argv[1], sys.argv[2]
+  case "$JSON_TOOL" in
+    python3)
+      python3 -c 'import json, sys
 try:
-    data = json.loads(raw)
-    value = data.get("data") or {}
-    if key in value:
-        print(value[key])
+    data = json.loads(sys.argv[1]).get("data") or {}
+    if isinstance(data, dict) and data.get(sys.argv[2]) is not None:
+        sys.stdout.write(str(data[sys.argv[2]]))
 except Exception:
-    pass
-PY
+    pass' "$1" "$2"
+      ;;
+    jq)
+      printf '%s' "$1" | jq -r --arg k "$2" \
+        'if (.data | type) == "object" then (.data[$k] // "" | tostring) else "" end' 2>/dev/null
+      ;;
+    *)
+      printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+      ;;
+  esac
 }
 
-# 取 data 下某个数组的第一项 id
+# 取 data（数组，或 data[$2] 数组）第一项的 id
 json_first_id() {
-  python3 - "$1" "$2" <<'PY'
-import json, sys
-raw, key = sys.argv[1], sys.argv[2]
+  case "$JSON_TOOL" in
+    python3)
+      python3 -c 'import json, sys
 try:
-    data = json.loads(raw).get("data")
-    items = data
-    if isinstance(data, dict):
-        items = data.get(key) or []
-    if isinstance(items, list) and items:
-        print(items[0].get("id", ""))
+    data = json.loads(sys.argv[1]).get("data")
+    items = data if isinstance(data, list) else (data or {}).get(sys.argv[2] or "") or []
+    if isinstance(items, list) and items and items[0].get("id") is not None:
+        sys.stdout.write(str(items[0]["id"]))
 except Exception:
-    pass
-PY
+    pass' "$1" "$2"
+      ;;
+    jq)
+      printf '%s' "$1" | jq -r --arg k "$2" \
+        '(if (.data | type) == "array" then .data else (.data[$k] // []) end) | (.[0].id // "") | tostring' \
+        2>/dev/null
+      ;;
+    *)
+      printf '%s' "$1" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1
+      ;;
+  esac
+}
+
+# 取 data[$2] 数组第一项的 $3 字段（用于上传结果的 thumbKey）
+json_first_field() {
+  case "$JSON_TOOL" in
+    python3)
+      python3 -c 'import json, sys
+try:
+    data = json.loads(sys.argv[1]).get("data") or {}
+    items = data.get(sys.argv[2]) or []
+    if isinstance(items, list) and items and items[0].get(sys.argv[3]) is not None:
+        sys.stdout.write(str(items[0][sys.argv[3]]))
+except Exception:
+    pass' "$1" "$2" "$3"
+      ;;
+    jq)
+      printf '%s' "$1" | jq -r --arg k "$2" --arg f "$3" \
+        '(.data[$k] // []) | (.[0][$f] // "") | tostring' 2>/dev/null
+      ;;
+    *)
+      printf '%s' "$1" | sed -n 's/.*"'"$3"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+      ;;
+  esac
 }
 
 # req METHOD PATH EXPECTED [JSON_BODY] [EXTRA_CURL_ARGS...]
@@ -167,11 +239,15 @@ if [ -z "$TOKEN" ]; then
 fi
 
 req GET /auth/me 200
-req PATCH /auth/profile 200 "{\"nickname\":\"冒烟测试\"}"
-req GET /auth/family 200
-req GET /auth/members 200
-req GET /auth/invite-code 200
-req POST /auth/password 400 '{"oldPassword":"wrong-password","newPassword":"Bee123456"}'
+req PATCH /auth/me 200 "{\"nickname\":\"冒烟测试\"}"
+# 家庭信息挂在 /family 下（/auth/* 只有 register/login/logout/me/password）
+req GET /family 200
+req GET /family/members 200
+req GET /family/invite-code 200
+# 原密码故意传错，只验证「校验失败」这条分支：后端 40102（原密码不正确）按错误码表映射 HTTP 401；
+# 新口令复用环境变量，不落任何字面量
+WRONG_PWD_BODY="{\"oldPassword\":\"wrong-password\",\"newPassword\":\"$PASSWORD\"}"
+req PUT /auth/password 401 "$WRONG_PWD_BODY"
 
 # ---------------------------------------------------------------------------
 # 2. 家庭
@@ -196,14 +272,15 @@ if [ -z "$BABY_ID" ]; then
   BABY_ID="$(json_first_id "$(cat "$tmp_body")" "")"
 fi
 req GET "/babies/$BABY_ID" 200
-req PUT "/babies/$BABY_ID" 200 "$BABY_BODY"
+req PATCH "/babies/$BABY_ID" 200 "$BABY_BODY"
 
 # ---------------------------------------------------------------------------
 # 4. 成长记录
 # ---------------------------------------------------------------------------
 printf "\n[4] 成长记录\n"
 GROWTH_BODY='{"recordedAt":"2026-10-24","heightCm":78.5,"weightKg":9.8,"headCm":46.2,"note":"冒烟测试"}'
-if req PUT "/babies/$BABY_ID/growth-records" 200 "$GROWTH_BODY"; then
+# 成长记录是「按日期 upsert」语义，方法是 POST
+if req POST "/babies/$BABY_ID/growth-records" 200 "$GROWTH_BODY"; then
   GROWTH_ID="$(json_str "$(cat "$tmp_body")" id)"
 fi
 req GET "/babies/$BABY_ID/growth-records" 200
@@ -236,36 +313,31 @@ req PATCH "/albums/$ALBUM_ID" 200 '{"description":"更新后的描述"}'
 # 7. 照片（含上传）
 # ---------------------------------------------------------------------------
 printf "\n[7] 照片\n"
-SAMPLE_IMAGE="$(mktemp -t beesmoke.XXXXXX).png"
-python3 - "$SAMPLE_IMAGE" <<'PY'
-import struct, sys, zlib
+# 生成 8×8 纯色 PNG：python3 直接写 stdout，不落临时文件；没有 python3 时用内置 base64
+if [ "$JSON_TOOL" = "python3" ]; then
+  python3 -c 'import struct, sys, zlib
 
-# 生成 8×8 纯色 PNG，避免依赖仓库里的样例图
+
 def chunk(tag, data):
-    return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', zlib.crc32(tag + data) & 0xFFFFFFFF)
+    return (struct.pack(">I", len(data)) + tag + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
 
 width = height = 8
-raw = b''.join(b'\x00' + b'\xE8\x9A\x2B' * width for _ in range(height))
-png = b'\x89PNG\r\n\x1a\n'
-png += chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
-png += chunk(b'IDAT', zlib.compress(raw, 9))
-png += chunk(b'IEND', b'')
-open(sys.argv[1], 'wb').write(png)
-PY
+raw = b"".join(b"\x00" + b"\xE8\x9A\x2B" * width for _ in range(height))
+png = b"\x89PNG\r\n\x1a\n"
+png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+png += chunk(b"IDAT", zlib.compress(raw, 9))
+png += chunk(b"IEND", b"")
+sys.stdout.buffer.write(png)' >"$SAMPLE_IMAGE" 2>/dev/null
+else
+  printf '%s' "$SAMPLE_PNG_B64" | base64 -d >"$SAMPLE_IMAGE" 2>/dev/null \
+    || printf '%s' "$SAMPLE_PNG_B64" | base64 -D >"$SAMPLE_IMAGE" 2>/dev/null
+fi
 
 if req POST /photos/upload 200 "" -F "files=@$SAMPLE_IMAGE;type=image/png" -F "albumId=$ALBUM_ID"; then
   PHOTO_ID="$(json_first_id "$(cat "$tmp_body")" successes)"
-  UPLOAD_KEY="$(python3 - "$(cat "$tmp_body")" <<'PY'
-import json, sys
-try:
-    data = json.loads(sys.argv[1]).get('data') or {}
-    items = data.get('successes') or []
-    if items:
-        print(items[0].get('thumbKey') or '')
-except Exception:
-    pass
-PY
-)"
+  UPLOAD_KEY="$(json_first_field "$(cat "$tmp_body")" successes thumbKey)"
 fi
 
 req GET "/photos?albumId=$ALBUM_ID&page=0&size=10" 200
