@@ -143,7 +143,9 @@ onMounted(() => {
           <li>家人共用一本相册，谁都能上传</li>
         </ul>
       </div>
-      <HexPattern class="bee-login__pattern" :cols="7" :rows="5" :radius="26" :opacity="0.08" />
+      <div class="bee-login__pattern" aria-hidden="true">
+        <HexPattern :cols="10" :rows="8" :radius="16" :opacity="0.08" />
+      </div>
     </section>
 
     <section class="bee-login__panel">
@@ -336,8 +338,18 @@ onMounted(() => {
   font-weight: 700;
 }
 
+/* 蜂巢装饰：仅右下角一块（02 文档 §5.1 / T20-⑪「8%、仅右下角」），
+   用径向遮罩把纹理向角落收拢，标题与三条卖点区域不出纹理 */
 .bee-login__pattern {
+  position: absolute;
+  right: -80px;
+  bottom: -80px;
   z-index: 1;
+  width: 460px;
+  height: 460px;
+  pointer-events: none;
+  -webkit-mask-image: radial-gradient(circle at 100% 100%, black 0%, transparent 68%);
+  mask-image: radial-gradient(circle at 100% 100%, black 0%, transparent 68%);
 }
 
 .bee-login__panel {

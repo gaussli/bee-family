@@ -72,6 +72,19 @@ const hasBaby = computed<boolean>(() => babies.value.length > 0)
 const latest = computed(() => curve.value?.latest ?? null)
 const delta = computed(() => curve.value?.delta ?? { heightCm: null, weightKg: null, headCm: null })
 
+/**
+ * 窄屏用的短日期（"2026-10-24" → "10月24日"）。
+ *
+ * <p>桌面显示完整年月日，移动端省去年份，保证日期列永不折行（02 文档 T24-⑩）。</p>
+ *
+ * @param input 后端日期串
+ */
+function formatShortDate(input: string): string {
+  const [, month, day] = input.slice(0, 10).split('-')
+  if (!month || !day) return input
+  return `${Number(month)}月${Number(day)}日`
+}
+
 const metricCards = computed(() => [
   {
     key: 'height',
@@ -326,7 +339,10 @@ onMounted(async () => {
 
           <ul v-else class="bee-growth-view__record-list">
             <li v-for="record in records" :key="record.id" class="bee-growth-view__record">
-              <span class="bee-growth-view__record-date">{{ formatDate(record.recordedAt) }}</span>
+              <span class="bee-growth-view__record-date">
+                <span class="is-full">{{ formatDate(record.recordedAt) }}</span>
+                <span class="is-short">{{ formatShortDate(record.recordedAt) }}</span>
+              </span>
               <span class="bee-growth-view__record-values">
                 <span>{{ record.heightCm === null ? '—' : formatDecimal(record.heightCm) }} cm</span>
                 <span>{{ record.weightKg === null ? '—' : formatDecimal(record.weightKg) }} kg</span>
@@ -538,10 +554,16 @@ onMounted(async () => {
 }
 
 .bee-growth-view__record-date {
-  width: 108px;
+  width: 118px;
   flex: none;
   font-size: var(--fs-body);
   color: var(--text-primary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.bee-growth-view__record-date .is-short {
+  display: none;
 }
 
 .bee-growth-view__record-values {
@@ -610,8 +632,16 @@ onMounted(async () => {
   }
 
   .bee-growth-view__record-date {
-    width: 92px;
+    width: 88px;
     font-size: 13px;
+  }
+
+  .bee-growth-view__record-date .is-full {
+    display: none;
+  }
+
+  .bee-growth-view__record-date .is-short {
+    display: inline;
   }
 
   .bee-growth-view__record-actions {

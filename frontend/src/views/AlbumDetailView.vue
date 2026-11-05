@@ -98,9 +98,9 @@ const moveOptions = computed(() =>
 )
 
 const sortOptions: { label: string; value: PhotoSort }[] = [
-  { label: '拍摄时间（新→旧）', value: 'takenAt_desc' },
-  { label: '拍摄时间（旧→新）', value: 'takenAt_asc' },
-  { label: '上传时间（新→旧）', value: 'createdAt_desc' },
+  { label: '最新拍摄', value: 'takenAt_desc' },
+  { label: '最早拍摄', value: 'takenAt_asc' },
+  { label: '最近上传', value: 'createdAt_desc' },
 ]
 
 async function loadAlbum(): Promise<void> {

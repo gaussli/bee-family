@@ -8,7 +8,6 @@
  */
 import { computed } from 'vue'
 import PhotoCell from './PhotoCell.vue'
-import BeeSkeleton from '@/components/base/BeeSkeleton.vue'
 import type { Photo } from '@/types/models'
 
 interface Props {
@@ -46,9 +45,10 @@ function isSelected(id: number): boolean {
       @open="emit('open', $event)"
       @toggle="emit('toggle', $event)"
     />
-  </div>
 
-  <BeeSkeleton v-if="loadingMore" class="bee-photo-grid__more" variant="grid" :count="10" :columns="5" />
+    <!-- 分页骨架直接作为网格子项，列数与 gap 永远跟随当前断点，不再硬编码 5 列 -->
+    <span v-for="i in loadingMore ? 5 : 0" :key="`placeholder-${i}`" class="bee-photo-grid__placeholder" />
+  </div>
 </template>
 
 <style scoped>
@@ -60,6 +60,24 @@ function isSelected(id: number): boolean {
 
 .bee-photo-grid__more {
   margin-top: var(--sp-2);
+}
+
+.bee-photo-grid__placeholder {
+  display: block;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--r-sm);
+  background: var(--warm-100);
+  animation: bee-photo-grid-pulse 1.4s var(--ease-in-out) infinite;
+}
+
+@keyframes bee-photo-grid-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 @media (min-width: 768px) {

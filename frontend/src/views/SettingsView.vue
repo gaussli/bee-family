@@ -159,6 +159,15 @@ watch(
   },
 )
 
+watch(
+  () => auth.nickname,
+  (value) => {
+    // 直链打开 /settings 时 authStore 的用户信息可能晚于 onMounted 才就绪（守卫里再拉 /auth/me），
+    // 昵称是「复制值」而非计算值，必须跟随补填，否则输入框会一直空白
+    if (value && !account.nickname) account.nickname = value
+  },
+)
+
 onMounted(async () => {
   const key = typeof route.query.tab === 'string' ? (route.query.tab as TabKey) : 'account'
   if (tabs.some((tab) => tab.key === key)) activeTab.value = key
