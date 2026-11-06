@@ -311,8 +311,9 @@ record('A1', '注册首个用户返回 200/code 0 且成为 owner',
 if (!tokenA || !Number.isInteger(familyA)) {
   console.error(`\n前置失败：注册首用户未成功（status=${registerA.status} code=${registerA.body?.code}）。`
     + '\n后续用例全部依赖这个账号，整轮跳过。'
-    + '\n提示：本脚本要求后端连的是「空库」——user 表非空时注册必须带邀请码，'
-    + '只有首个用户才会成为 owner 并自动建家庭。')
+    + '\n提示：Q7 后注册不创建、不加入任何家庭（activeFamilyId=null / onboardingState=NEW），'
+    + 'A 组主流程仍依赖 v1.0「首注册自动建家庭」语义，需后端 v1.1 就绪后统一改造；'
+    + '改造方案与未同步项见 docs/qa/q7-baseline-sync.md。')
   writeReport()
   process.exit(1)
 }
@@ -455,18 +456,32 @@ snapshotCount('A15')
 
 console.log('\n=== B. 越权隔离（第二个家庭 token 访问第一个家庭）===')
 
-// v1.1 Q7：邀请码端点与 40902 错误码已永久移除，用「端点不存在」做正向验收
+// v1.1 Q7：GET /api/family/invite-code、POST .../reset 与 40902 已永久删除
+//（无别名、无弃用接口，docs/07 §5.2 第 6 项 / 附录 B）。B1 正向验收「旧端点不可达」，
+// B2 验收「user 表非空时注册不传任何码仍成功并进入无家庭引导」。
 const inviteResp = await call('GET', '/api/family/invite-code', { token: tokenA })
-record('B1', '旧邀请码端点已移除（404/403/401/405，不再返回 200 邀请码）',
-  [404, 403, 401, 405].includes(inviteResp.status),
-  `status=${inviteResp.status} code=${inviteResp.body?.code}`)
+record('B1', '旧邀请码端点已移除（404/405/401/403，且不再返回邀请码数据）',
+  [404, 403, 401, 405].includes(inviteResp.status)
+    && inviteResp.body?.code !== 0 && !inviteResp.body?.data?.code,
+  `status=${inviteResp.status} code=${inviteResp.body?.code} data.code=${inviteResp.body?.data?.code}`)
 
+// 此时 user 表已有 A 等账号；Q7 / INC-P0-01 要求注册仍 100% 成功且不创建、不加入任何家庭。
+// 契约（docs/07 §5.3.1）：TokenResp{activeFamilyId:null, family:null, role:null,
+//   families:[], onboardingState:'NEW', pendingRequestCount:0}；40902 不再存在。
+const noCodeEmail = `qa-nocode-${stampLabel}@home.local`
 const noInvite = await call('POST', '/api/auth/register', {
-  json: { email: `qa-nocode-${stampLabel}@home.local`, password: passwordA, nickname: '无邀请码' },
+  json: { email: noCodeEmail, password: passwordA, nickname: '无邀请码' },
 })
-record('B2', '注册不再校验邀请码：不会出现已删除的 40902',
-  noInvite.body?.code !== 40902,
-  `status=${noInvite.status} code=${noInvite.body?.code}`)
+const noInviteData = noInvite.body?.data
+record('B2', '注册不传任何码成功并进入无家庭引导（200 / 0 家庭 / NEW，40902 已废弃）',
+  noInvite.status === 200 && noInvite.body?.code === 0
+    && Boolean(noInviteData?.token) && Number.isInteger(noInviteData?.user?.id)
+    && noInviteData?.activeFamilyId == null && noInviteData?.family == null
+    && Array.isArray(noInviteData?.families) && noInviteData.families.length === 0
+    && noInviteData?.onboardingState === 'NEW'
+    && noInvite.body?.code !== 40902,
+  `status=${noInvite.status} code=${noInvite.body?.code} activeFamilyId=${noInviteData?.activeFamilyId} `
+    + `families=${JSON.stringify(noInviteData?.families)} onboardingState=${noInviteData?.onboardingState}`)
 snapshotCount('B2')
 
 const emailC = `qa-e2e-c-${stampLabel}@home.local`
@@ -475,9 +490,14 @@ const registerC = await call('POST', '/api/auth/register', {
 })
 const tokenC = registerC.body?.data?.token
 const userC = registerC.body?.data?.user?.id
-record('B3', '注册第二个账号成功（家庭归属由后续 SQL 夹具决定）',
-  registerC.status === 200 && Number.isInteger(userC),
-  `status=${registerC.status} code=${registerC.body?.code} familyId=${registerC.body?.data?.familyId}`)
+record('B3', '第二账号同样 0 家庭（Q7）；跨家庭场景由后续 SQL 夹具构造',
+  registerC.status === 200 && registerC.body?.code === 0
+    && Boolean(tokenC) && Number.isInteger(userC)
+    && registerC.body?.data?.activeFamilyId == null
+    && Array.isArray(registerC.body?.data?.families) && registerC.body?.data?.families.length === 0
+    && registerC.body?.data?.onboardingState === 'NEW',
+  `status=${registerC.status} code=${registerC.body?.code} activeFamilyId=${registerC.body?.data?.activeFamilyId} `
+    + `families=${JSON.stringify(registerC.body?.data?.families)} onboardingState=${registerC.body?.data?.onboardingState}`)
 snapshotCount('B3')
 
 // 把 C 的成员关系迁到新建家庭 B，构造真正的跨家庭场景
@@ -880,7 +900,9 @@ if (leftover.files > 0) {
     + '因此该用例只能标记为「本环境不可判定」，需在非沙箱环境复跑。')
 }
 
-sql(`delete from \`user\` where email in ('${emailA}', '${emailC}')`)
+// Q7 后 B2 的注册会成功创建账号（旧版期望 40902 失败、不产生用户），必须一并清理，
+// 否则残留用户会破坏下次「空库」前提。
+sql(`delete from \`user\` where email in ('${emailA}', '${emailC}', '${noCodeEmail}')`)
 
 const failedCount = writeReport()
 process.exitCode = failedCount > 0 ? 1 : 0
