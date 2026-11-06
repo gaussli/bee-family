@@ -5,15 +5,15 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 /**
- * 注册请求。
+ * 注册请求（v1.1：Q1 无任何码）。
  *
- * <p>{@code inviteCode} 是否必填由 service 判定：{@code user} 表为空时（首个用户）忽略该字段并自建家庭；
- * 否则必须有效（40001 无法表达的「业务前置条件」用 40902 更准确）。</p>
+ * <p>Q7 已移除旧邀请码：注册不再携带 {@code inviteCode}，也不再凭码加入家庭。
+ * 注册后的家庭归属（0 家庭引导 / 凭家庭码申请）由 T02 / T03 按
+ * {@code docs/07-architecture-incremental.md} §5.3.1 实现；本 DTO 只保留账号本身的三个字段。</p>
  *
- * @param email      登录邮箱
- * @param password   明文密码（6-32 位）
- * @param nickname   显示名（1-32 位）
- * @param inviteCode 邀请码（8 位字母数字，可空）
+ * @param email    登录邮箱
+ * @param password 明文密码（6-32 位）
+ * @param nickname 显示名（1-32 位）
  */
 public record RegisterReq(
         @NotBlank(message = "不能为空")
@@ -27,8 +27,5 @@ public record RegisterReq(
 
         @NotBlank(message = "不能为空")
         @Size(max = 32, message = "长度不能超过 32 个字符")
-        String nickname,
-
-        @Size(max = 8, message = "邀请码为 8 位字母数字")
-        String inviteCode) {
+        String nickname) {
 }

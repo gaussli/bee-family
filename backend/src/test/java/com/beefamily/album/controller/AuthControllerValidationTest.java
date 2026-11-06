@@ -113,7 +113,7 @@ class AuthControllerValidationTest {
                 new com.beefamily.album.dto.auth.UserResp(1L, "a@b.com", "yanyan", null, null),
                 10L, "许家小院", com.beefamily.album.domain.enums.Role.owner, java.util.List.of()));
         String body = """
-                {"email":"a@b.com","password":"secret123","nickname":"yanyan","inviteCode":null}
+                {"email":"a@b.com","password":"secret123","nickname":"yanyan"}
                 """;
 
         mockMvc.perform(post("/api/auth/register")

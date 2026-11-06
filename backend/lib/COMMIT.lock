@@ -1,8 +1,8 @@
 # backend/lib/COMMIT.lock
 # HEIC 解码依赖（备选 A）源码自建的可复现锁定记录。
 # 由 QA「§9.8 P0 spike / S-1 前置」产出；对应报告 docs/qa/spike-s1-report.md。
-# 本文件是本次 spike 唯一允许落入 backend/lib/ 的实现无关记录；
-# vendor jar 与 maven-repo/ 由 T01 工程师按 docs/07 §9.2 落地，本任务不提前写入。
+# 本文件由 S-1 spike 产出，记录可复现构建事实；vendor jar 与 maven-repo/
+# 已由 T01 按 docs/07 §9.2 / §11.1 落地（见本文件 §8 与 backend/README.md §7-§8）。
 
 ## 1. 上游坐标与锁定 commit
 repository          : https://github.com/openize-com/openize-heic-java
@@ -104,3 +104,22 @@ licenses/MetadataExtractor-Apache-2.0.txt
   不影响离线构建）。备用收敛脚本见 docs/qa/spike-s1-report.md §10，本次未触发、故未验证其效果，
   不得写为「已验证」。
 - 备选 B（com.aspose:openize-heic:25.9）只在临时目录做对照后删除，未写入任何 pom / 仓库文件。
+
+## 8. T01 落地记录（v1.1 基础设施）
+t01.vendor.jar       : backend/lib/openize-heic-26.5.1.jar
+t01.vendor.pom       : backend/lib/openize-heic-26.5.1.pom（保留上游 POM，使 <exclusions> 生效）
+t01.maven-repo       : backend/lib/maven-repo/openize/openize-heic/26.5.1/{jar,pom}
+t01.jar.sha256       : 23e476205b89570c5eba4a62551b14a3a360570f3ca2db85578db44969425ddf
+                       —— 与 §4 jar.sha256.pinned 逐字一致；按 §3.2 固定 outputTimestamp 自建。
+t01.pom.repositories : <id>bee-vendor</id> + file://${project.basedir}/lib/maven-repo
+t01.pom.dependency   : openize:openize-heic:26.5.1 compile scope
+                       + <exclusions> com.drewnoakes:metadata-extractor（项目统一 2.19.0）
+t01.isobmff          : 无独立 jar；openize/isobmff/** 48 个条目已打进同一 jar（与 §5 一致）。
+                       docs/07 §9.2 表格「isobmff-*.jar」与 26.5.1 实况不符，按 §5 为准。
+t01.bootstrap        : scripts/bootstrap-vendor.sh —— 解决「全新环境首次 mvn -o 拒绝
+                       file:// 仓库」的构建前置；实测隐藏本地仓库 openize 后，
+                       bash scripts/bootstrap-vendor.sh → mvn -o package -DskipTests EXIT=0
+                       → mvn -o test 348 用例全绿 EXIT=0。详见 backend/README.md §8。
+t01.no.sample        : 上游 TestsData/samples/nokia/ 未 vendor；jar 内 0 个 .heic / 样本文件。
+t01.no.native        : jar 内 .so/.dll/.dylib = 0；backend/src/main/java 扫描
+                       ProcessBuilder / Runtime.exec / sips / ffmpeg / JNI = 0 命中。

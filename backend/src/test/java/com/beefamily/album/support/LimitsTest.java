@@ -2,7 +2,6 @@ package com.beefamily.album.support;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,7 +27,6 @@ class LimitsTest {
         assertThat(Limits.TAG_NAME_MAX_LENGTH).isEqualTo(20);
         assertThat(Limits.TAG_LIST_LIMIT).isEqualTo(20);
         assertThat(Limits.MAX_IMAGE_PIXELS).isEqualTo(100_000_000L);
-        assertThat(Limits.INVITE_CODE_TTL).isEqualTo(Duration.ofHours(24));
     }
 
     @Test
@@ -41,9 +39,13 @@ class LimitsTest {
     }
 
     @Test
-    @DisplayName("HEIC 文案必须同时含「iPhone」与「兼容性最佳」（ADR-01 的可用性要求）")
-    void heicHintIsActionable() {
-        assertThat(Limits.HEIC_HINT).contains("iPhone").contains("兼容性最佳");
+    @DisplayName("通用不支持文案不含全站禁用措辞（docs/06 §9.4）")
+    void unsupportedHintHasNoBannedWording() {
+        assertThat(Limits.UNSUPPORTED_HINT)
+                .doesNotContain("兼容性最佳")
+                .doesNotContain("不支持 HEIC")
+                .doesNotContain("仅 macOS")
+                .doesNotContain("邀请码");
     }
 
     @Test

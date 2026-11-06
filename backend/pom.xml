@@ -34,6 +34,28 @@
     <qa.excludedGroups>mysql</qa.excludedGroups>
   </properties>
 
+  <!--
+    HEIC 解码器（docs/07 §9.2 备选 A）：openize:openize-heic 不在 Maven Central，
+    由上游 GitHub 锁定 commit 源码自建后 vendor 到项目内 file:// 仓库。
+    - 产物与可复现构建记录见 backend/lib/COMMIT.lock；
+    - 纯 Java，无 native / JNI / JNA 依赖，无 ProcessBuilder / Runtime.exec / 系统命令；
+    - 备选 B（Aspose 私有仓）仅作 spike 对照，未进入本依赖树。
+  -->
+  <repositories>
+    <repository>
+      <id>bee-vendor</id>
+      <name>Bee Family vendored artifacts</name>
+      <url>file://${project.basedir}/lib/maven-repo</url>
+      <releases>
+        <enabled>true</enabled>
+        <updatePolicy>never</updatePolicy>
+      </releases>
+      <snapshots>
+        <enabled>false</enabled>
+      </snapshots>
+    </repository>
+  </repositories>
+
   <dependencies>
     <!-- Web / MVC -->
     <dependency>
@@ -99,11 +121,28 @@
       <artifactId>thumbnailator</artifactId>
       <version>${thumbnailator.version}</version>
     </dependency>
-    <!-- EXIF 读取（DateTimeOriginal / GPS） -->
+    <!-- EXIF 读取（DateTimeOriginal / GPS）；全局唯一版本 2.19.0 -->
     <dependency>
       <groupId>com.drewnoakes</groupId>
       <artifactId>metadata-extractor</artifactId>
       <version>${metadata-extractor.version}</version>
+    </dependency>
+    <!--
+      纯 Java HEIC 解码（vendored，锁 commit 1118f3c45a47a60cde593a6c47848b2a3a961b9a）。
+      上游 POM 声明 metadata-extractor:2.20.0；必须排除，否则与项目锁定的 2.19.0 并存，
+      EXIF 解析会出现两个版本。排除后由上面那条 2.19.0 统一提供。
+      上游 test scope 的 testng / jacoco 不会传递到本项目。
+    -->
+    <dependency>
+      <groupId>openize</groupId>
+      <artifactId>openize-heic</artifactId>
+      <version>26.5.1</version>
+      <exclusions>
+        <exclusion>
+          <groupId>com.drewnoakes</groupId>
+          <artifactId>metadata-extractor</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <!-- Lombok 仅用于实体 getter/setter 消噪；DTO 一律用 record -->
     <dependency>

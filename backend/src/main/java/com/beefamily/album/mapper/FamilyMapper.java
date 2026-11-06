@@ -4,9 +4,7 @@ import com.beefamily.album.domain.Family;
 import com.beefamily.album.domain.FamilyMember;
 import com.beefamily.album.domain.User;
 import com.beefamily.album.dto.family.FamilyResp;
-import com.beefamily.album.dto.family.InviteCodeResp;
 import com.beefamily.album.dto.family.MemberResp;
-import com.beefamily.album.support.DateTimes;
 import com.beefamily.album.support.Limits;
 
 /**
@@ -53,15 +51,4 @@ public final class FamilyMapper {
                 member.getRole(), member.getJoinedAt(), uploadedPhotoCount);
     }
 
-    /**
-     * 转邀请码响应。
-     *
-     * @param family 家庭实体
-     * @return 邀请码响应
-     */
-    public static InviteCodeResp toInviteCodeResp(Family family) {
-        boolean expired = family.getInviteCodeExpiresAt() == null
-                || family.getInviteCodeExpiresAt().isBefore(DateTimes.now());
-        return new InviteCodeResp(family.getInviteCode(), family.getInviteCodeExpiresAt(), expired);
-    }
 }

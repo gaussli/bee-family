@@ -187,17 +187,19 @@ class ImageValidatorTest {
         }
 
         @Test
-        @DisplayName(".heic 后缀被拒绝，提示必须含「iPhone」与「兼容性最佳」")
-        void rejectsHeicExtensionWithActionableHint() {
-            assertRejected(padded(HEIC_HEADER, 64), "IMG_0001.heic", "iPhone");
+        @DisplayName(".heic 后缀被拒绝，文案走通用不支持提示（Q7 后无专属 HEIC 文案）")
+        void rejectsHeicExtensionWithGenericHint() {
+            assertRejected(padded(HEIC_HEADER, 64), "IMG_0001.heic", Limits.UNSUPPORTED_HINT);
             assertThatThrownBy(() -> ImageValidator.validate(padded(HEIC_HEADER, 64), "IMG_0001.heic"))
-                    .hasMessageContaining("兼容性最佳");
+                    .hasMessageContaining(Limits.UNSUPPORTED_HINT)
+                    .hasMessageNotContaining("兼容性最佳")
+                    .hasMessageNotContaining("iPhone");
         }
 
         @Test
-        @DisplayName("HEIC 魔数但后缀是 .jpg：仍按魔数判为 HEIC 并给出 iPhone 指引")
+        @DisplayName("HEIC 魔数但后缀是 .jpg：仍按魔数判为 HEIC 并拒绝")
         void rejectsHeicMagicDisguisedAsJpg() {
-            assertRejected(padded(HEIC_HEADER, 64), "disguised.jpg", "iPhone");
+            assertRejected(padded(HEIC_HEADER, 64), "disguised.jpg", Limits.UNSUPPORTED_HINT);
         }
 
         @ParameterizedTest(name = "{0} 属于拒绝清单")

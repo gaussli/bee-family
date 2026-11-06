@@ -16,8 +16,9 @@ import java.util.Set;
  * <p><b>为什么明确拒绝 SVG</b>：SVG 可内嵌 {@code <script>}，是典型的存储型 XSS 入口；
  * 本项目图片通过 {@code <img>} 展示，虽然 {@code <img>} 不执行脚本，但下载原图后直接打开仍会触发。</p>
  *
- * <p><b>为什么 HEIC 直接拒绝</b>（ADR-01）：三个可行方案（imageio-heif / ImageMagick / 纯 Java）
- * 都需要目标机安装 native 依赖，重装即静默失效，故障模式是「上传成功但读出黑图」，比明确拒绝更糟。</p>
+ * <p><b>T01 阶段仍明确拒绝 HEIC</b>：v1.1 的纯 Java 解码与 EXIF 解析由 T03 接入
+ * （docs/07 §11.1），基础设施阶段沿用原有的明确拒绝，避免「上传成功但无法展示」。
+ * 拒绝文案统一走 {@link Limits#UNSUPPORTED_HINT}，不含旧 ADR-01 的可用性措辞。</p>
  */
 public final class ImageValidator {
 
@@ -73,7 +74,7 @@ public final class ImageValidator {
         ImageType sniffed = sniff(header.length > SNIFF_LENGTH ? slice(header, SNIFF_LENGTH) : header);
 
         if (sniffed == ImageType.HEIC) {
-            throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE, Limits.HEIC_HINT);
+            throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE, Limits.UNSUPPORTED_HINT);
         }
         if (sniffed == ImageType.SVG || isBlockedExtension(fileName)) {
             throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE,

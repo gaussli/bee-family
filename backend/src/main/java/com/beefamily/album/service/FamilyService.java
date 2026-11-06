@@ -7,7 +7,6 @@ import com.beefamily.album.domain.FamilyMember;
 import com.beefamily.album.domain.User;
 import com.beefamily.album.domain.enums.Role;
 import com.beefamily.album.dto.family.FamilyResp;
-import com.beefamily.album.dto.family.InviteCodeResp;
 import com.beefamily.album.dto.family.MemberResp;
 import com.beefamily.album.mapper.FamilyMapper;
 import com.beefamily.album.repository.AlbumRepository;
@@ -23,8 +22,6 @@ import com.beefamily.album.repository.UserRepository;
 import com.beefamily.album.security.FamilyAccessGuard;
 import com.beefamily.album.security.SecurityUtils;
 import com.beefamily.album.support.DateTimes;
-import com.beefamily.album.support.InviteCodes;
-import com.beefamily.album.support.Limits;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -217,37 +214,6 @@ public class FamilyService {
     }
 
     /**
-     * 查看当前邀请码（仅 owner）。若从未生成则生成一个。
-     *
-     * @return 邀请码响应
-     */
-    @Transactional
-    public InviteCodeResp getInviteCode() {
-        guard.assertOwner();
-        Family family = requireFamily();
-        if (family.getInviteCode() == null) {
-            applyNewInviteCode(family);
-            family = familyRepository.save(family);
-        }
-        return FamilyMapper.toInviteCodeResp(family);
-    }
-
-    /**
-     * 重置邀请码（仅 owner）：旧码立即失效。
-     *
-     * @return 邀请码响应
-     */
-    @Transactional
-    public InviteCodeResp resetInviteCode() {
-        guard.assertOwner();
-        Family family = requireFamily();
-        applyNewInviteCode(family);
-        Family saved = familyRepository.save(family);
-        log.info("invite code reset familyId={}", saved.getId());
-        return FamilyMapper.toInviteCodeResp(saved);
-    }
-
-    /**
      * 读取当前家庭实体。
      *
      * @return 家庭实体
@@ -271,26 +237,6 @@ public class FamilyService {
         return FamilyMapper.toResp(family, ownerNickname, memberCount, includeInviteCode);
     }
 
-    /**
-     * 写入新的邀请码与过期时间。
-     *
-     * @param family 家庭实体
-     */
-    private void applyNewInviteCode(Family family) {
-        String code = null;
-        for (int attempt = 0; attempt < 10; attempt++) {
-            String candidate = InviteCodes.generate();
-            if (!familyRepository.existsByInviteCode(candidate)) {
-                code = candidate;
-                break;
-            }
-        }
-        if (code == null) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "邀请码生成失败，请重试");
-        }
-        family.setInviteCode(code);
-        family.setInviteCodeExpiresAt(DateTimes.now().plus(Limits.INVITE_CODE_TTL));
-    }
 
     /**
      * 收集家庭全部照片的三档 key（删家庭时用于清理磁盘）。

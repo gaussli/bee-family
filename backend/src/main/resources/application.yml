@@ -67,6 +67,14 @@ app:
     root: ${STORAGE_ROOT:./data/uploads}
   cors:
     allowed-origins: ${CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+  # HEIC 解码 / 展示副本配置（docs/07 §9.5）；全部为无敏感值的固定档位，不提供「后续开启」入口
+  heic:
+    # 启动能力探测；false 仅用于本地调试，不改上传行为，服务照常启动
+    probe-on-startup: true
+    # C-2 已确认：展示副本长边 1600px
+    display-max-edge: 1600
+    # 缩略图长边，沿用 docs/03，不变
+    thumb-max-edge: 480
 
 logging:
   level:

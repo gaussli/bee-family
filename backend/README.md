@@ -66,7 +66,7 @@
 | jar 内容 | 145 entries / 134 classes，**jar 内 native 二进制文件数 = 0** |
 | JVM 运行期 | `-Xlog:library=info -verbose:class` 探针：加载的 native 库仅 JDK 自身 `libnio.dylib` / `libzip.dylib`；JNA 类加载 **0 次**，无第三方 native 库加载 |
 
-即：HEIC 解码为**服务端纯 Java 链路**，不依赖 macOS 系统命令、不依赖 `libheif` / JNI / JNA、不加载任何部署环境相关的 native 库；与 `docs/06` §9.4「UI 不得出现『仅 macOS 可用』『需安装系统工具』」一致。
+即：HEIC 解码为**服务端纯 Java 链路**，不依赖任何操作系统专属命令、不依赖 `libheif` / JNI / JNA、不加载任何部署环境相关的 native 库；与 `docs/06` §9.4 的全站文案禁令一致（UI 不得暗示系统专属，也不得要求额外安装系统工具）。
 
 ## 7. 文件归属
 
@@ -76,3 +76,34 @@
 | `backend/lib/licenses/*.txt` | 三份许可证原文（S-1 spike 产出） |
 | `backend/README.md` | 本合规声明（S-1 spike 产出） |
 | `backend/lib/openize-heic-26.5.1.jar`、`backend/lib/maven-repo/**`、`backend/pom.xml` 的依赖声明 | 由 **T01** 按 `docs/07` §9.2 / §11.1 落地；S-1 spike 仅在临时目录做等价验证，未提前写入实现产物 |
+| `scripts/bootstrap-vendor.sh` | T01 交付的离线构建前置脚本（见第 8 节） |
+
+## 8. 离线构建前置（全新环境必读）
+
+`pom.xml` 通过 `<repositories>` 以 `file://${project.basedir}/lib/maven-repo` 引用 vendor 目录，使依赖保持普通 compile scope、`<exclusions>` 才能生效。但 Maven 的 `-o`（offline）会禁用**所有** remote repository —— `file://` 也不例外，只允许读「本地仓库里已带正确 `_remote.repositories` 标记」的 artifact。因此**全新 clone、本地仓库尚无 `openize` 时，首次直接跑 `mvn -o package` 会失败**：
+
+```
+Cannot access bee-vendor (file://.../backend/lib/maven-repo) in offline mode and the
+artifact openize:openize-heic:jar:26.5.1 has not been downloaded from it before.
+```
+
+两条等价路径，任选其一（**都不需要外网**，`file://` 是本地文件系统）：
+
+```bash
+# A) 幂等脚本：把 vendored 产物装进 Maven 本地仓库（推荐，无需 Maven 插件解析）
+bash scripts/bootstrap-vendor.sh
+
+# B) 先跑一次不带 -o 的构建，让 Maven 自行从 file:// 仓库「下载」一次
+cd backend && mvn -DskipTests package
+```
+
+之后即可执行验收命令：
+
+```bash
+cd backend
+mvn -o package -DskipTests
+mvn -o test
+```
+
+`bootstrap-vendor.sh` 会依次探测显式参数、`MAVEN_REPO_LOCAL` 环境变量、`~/.m2/settings.xml` 的 `<localRepository>`、`~/.m2/repository`，并打印实际写入路径；若本机 Maven 配置特殊，用第一个参数显式覆盖。脚本不删除任何文件、可重复执行。
+

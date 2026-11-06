@@ -243,7 +243,9 @@ req PATCH /auth/me 200 "{\"nickname\":\"冒烟测试\"}"
 # 家庭信息挂在 /family 下（/auth/* 只有 register/login/logout/me/password）
 req GET /family 200
 req GET /family/members 200
-req GET /family/invite-code 200
+# Q7 已移除旧邀请码：GET /family/invite-code 不再有映射，端点存在即视为回归。
+# 期望 404（Spring 无 handler）；若安全链先行拦截则可能是 401/403，一并接受。
+req_any GET /family/invite-code "404 403 401 405"
 # 原密码故意传错，只验证「校验失败」这条分支：后端 40102（原密码不正确）按错误码表映射 HTTP 401；
 # 新口令复用环境变量，不落任何字面量
 WRONG_PWD_BODY="{\"oldPassword\":\"wrong-password\",\"newPassword\":\"$PASSWORD\"}"
@@ -256,7 +258,8 @@ printf "\n[2] 家庭\n"
 req GET /family 200
 req GET /family/members 200
 req PATCH /family 200 '{"name":"冒烟测试之家"}'
-req POST /family/invite-code/reset 200
+# Q7 已移除旧邀请码：POST /family/invite-code/reset 同样不再有映射。
+req_any POST /family/invite-code/reset "404 403 401 405"
 req_any DELETE /family/members/999999 "404 403 400"
 
 # ---------------------------------------------------------------------------

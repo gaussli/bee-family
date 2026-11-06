@@ -3,7 +3,6 @@ package com.beefamily.album.controller;
 import com.beefamily.album.common.ApiResponse;
 import com.beefamily.album.dto.family.DeleteFamilyReq;
 import com.beefamily.album.dto.family.FamilyResp;
-import com.beefamily.album.dto.family.InviteCodeResp;
 import com.beefamily.album.dto.family.MemberResp;
 import com.beefamily.album.dto.family.UpdateFamilyReq;
 import com.beefamily.album.service.FamilyService;
@@ -14,7 +13,6 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -93,25 +91,5 @@ public class FamilyController {
     public ApiResponse<Void> removeMember(@PathVariable Long userId) {
         familyService.removeMember(userId);
         return ApiResponse.ok();
-    }
-
-    /**
-     * 查看邀请码（仅 owner）。
-     *
-     * @return 邀请码
-     */
-    @GetMapping("/invite-code")
-    public ApiResponse<InviteCodeResp> getInviteCode() {
-        return ApiResponse.ok(familyService.getInviteCode());
-    }
-
-    /**
-     * 重置邀请码（仅 owner），旧码立即失效。
-     *
-     * @return 新邀请码
-     */
-    @PostMapping("/invite-code/reset")
-    public ApiResponse<InviteCodeResp> resetInviteCode() {
-        return ApiResponse.ok(familyService.resetInviteCode());
     }
 }

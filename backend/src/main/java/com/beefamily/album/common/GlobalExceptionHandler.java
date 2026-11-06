@@ -232,8 +232,28 @@ public class GlobalExceptionHandler {
      * @return 统一错误响应
      */
     private ResponseEntity<ApiResponse<Void>> build(ErrorCode errorCode, String message) {
+        return ResponseEntity.status(resolveStatus(errorCode)).body(ApiResponse.fail(errorCode, message));
+    }
+
+    /**
+     * 业务码 → HTTP 状态（v1.1）。
+     *
+     * <p><b>429 / 503</b>：新增的 {@link ErrorCode#RATE_LIMITED}(42901) 与
+     * {@link ErrorCode#HEIC_TRANSCODER_UNAVAILABLE}(50301) 必须经 {@link HttpStatus#resolve(int)}
+     * 映射为 {@code TOO_MANY_REQUESTS} / {@code SERVICE_UNAVAILABLE}，不能退化成 500。
+     * 这里刻意走统一的 resolve 而不是硬编码分支：错误码编号规则保证
+     * {@code getHttpStatus()} 恒等于 HTTP 语义分组，新增码无需再改本方法。</p>
+     *
+     * <p><b>40304 / 40305 不误清 token</b>：前端 {@code ApiError.isAuthError} 只把
+     * {@code 40100..40199} 视为登录失效并清除本地 token。这两个新码是「无可用家庭」与
+     * 「仅 owner/admin」的业务态，属于 403 分组，既不能被降级成 401，也不得在这里被改写成
+     * 任何 401xx；保持 403 原样即可保证用户不会被误踢回登录页。</p>
+     *
+     * @param errorCode 错误码
+     * @return 解析后的 HTTP 状态；无法解析时兜底 500
+     */
+    private HttpStatus resolveStatus(ErrorCode errorCode) {
         HttpStatus status = HttpStatus.resolve(errorCode.getHttpStatus());
-        HttpStatus resolved = status == null ? HttpStatus.INTERNAL_SERVER_ERROR : status;
-        return ResponseEntity.status(resolved).body(ApiResponse.fail(errorCode, message));
+        return status == null ? HttpStatus.INTERNAL_SERVER_ERROR : status;
     }
 }

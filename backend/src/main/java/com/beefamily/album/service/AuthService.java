@@ -24,8 +24,6 @@ import com.beefamily.album.security.JwtService;
 import com.beefamily.album.security.SecurityUtils;
 import com.beefamily.album.security.UserPrincipal;
 import com.beefamily.album.support.DateTimes;
-import com.beefamily.album.support.InviteCodes;
-import com.beefamily.album.support.Limits;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -38,8 +36,12 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 认证与账号服务。
  *
- * <p><b>首用户自建家庭</b>：{@code user} 表为空时，注册即成为 owner 并自动创建家庭 + 24h 邀请码；
- * 之后注册必须带有效邀请码（40902）且家庭未满 6 人（40903）。整个注册在同一事务内完成。</p>
+ * <p><b>Q7 旧邀请码已移除</b>：注册不再携带邀请码，也不再凭码加入家庭。
+ * {@code user} 表为空时，注册即成为 owner 并自动创建家庭；非首用户在本阶段**不加入任何家庭**
+ * （{@link #buildTokenResp} 已支持 {@code member == null} 返回无家庭登录态）。
+ * v1.1 的「0 家庭引导 / 凭家庭码申请 / 多家庭切换」由 T02 / T03 按
+ * {@code docs/07-architecture-incremental.md} §5.3.1 实现 —— T01 只做基础设施清理，
+ * 不实现任何新业务，也不保留任何旧邀请码兼容分支。</p>
  *
  * <p><b>日志纪律</b>：只打印 userId / familyId 这类标识，**绝不打印明文密码、密码哈希或 token**
  * （§7.8）；错误日志也不回显请求体。</p>
@@ -94,7 +96,7 @@ public class AuthService {
     }
 
     /**
-     * 注册。
+     * 注册（Q1：无任何码）。
      *
      * @param req 请求
      * @return 登录态（含 token）
@@ -115,16 +117,16 @@ public class AuthService {
         user.setNickname(nickname);
         user = userRepository.save(user);
 
-        Family family;
         FamilyMember member;
         if (existingUserCount == 0) {
-            family = createFamily(user, nickname);
+            Family family = createFamily(user, nickname);
             member = joinFamily(family, user, Role.owner);
             log.info("bootstrap family familyId={} ownerId={}", family.getId(), user.getId());
         } else {
-            family = resolveFamilyByInviteCode(req.inviteCode());
-            member = joinFamily(family, user, Role.member);
-            log.info("join family familyId={} userId={}", family.getId(), user.getId());
+            // Q7：旧「凭邀请码加入家庭」链路已整体删除。此处刻意不加入任何家庭，
+            // 让 TokenResp 走 member == null 分支（无家庭登录态）；申请 / 引导属 T02 / T03。
+            member = null;
+            log.info("register without family userId={}", user.getId());
         }
         return buildTokenResp(user, member);
     }
@@ -226,7 +228,10 @@ public class AuthService {
     }
 
     /**
-     * 创建家庭：默认名 {@code "{昵称}的家"} + 8 位邀请码（24h）。
+     * 创建家庭：默认名 {@code "{昵称}的家"}。
+     *
+     * <p>Q7 后不再写入邀请码 / 过期时间（V2 DDL 已删除这两列）。多家庭所需的
+     * {@code family_code} 由 T02 / T03 补齐。</p>
      *
      * @param user     创建者
      * @param nickname 昵称
@@ -236,8 +241,6 @@ public class AuthService {
         Family family = new Family();
         family.setName(defaultFamilyName(nickname));
         family.setOwnerId(user.getId());
-        family.setInviteCode(generateUniqueInviteCode());
-        family.setInviteCodeExpiresAt(DateTimes.now().plus(Limits.INVITE_CODE_TTL));
         return familyRepository.save(family);
     }
 
@@ -258,45 +261,6 @@ public class AuthService {
     }
 
     /**
-     * 校验邀请码并返回家庭。
-     *
-     * @param inviteCode 邀请码
-     * @return 家庭
-     */
-    private Family resolveFamilyByInviteCode(String inviteCode) {
-        String code = inviteCode == null ? "" : inviteCode.trim().toUpperCase(Locale.ROOT);
-        if (code.isEmpty()) {
-            throw new BusinessException(ErrorCode.INVITE_CODE_INVALID);
-        }
-        Family family = familyRepository.findByInviteCode(code)
-                .orElseThrow(() -> new BusinessException(ErrorCode.INVITE_CODE_INVALID));
-        if (family.getInviteCodeExpiresAt() == null
-                || family.getInviteCodeExpiresAt().isBefore(DateTimes.now())) {
-            throw new BusinessException(ErrorCode.INVITE_CODE_INVALID);
-        }
-        long memberCount = familyMemberRepository.countByFamilyId(family.getId());
-        if (memberCount >= Limits.FAMILY_MEMBER_LIMIT) {
-            throw new BusinessException(ErrorCode.FAMILY_MEMBER_LIMIT);
-        }
-        return family;
-    }
-
-    /**
-     * 生成不被占用的邀请码（撞唯一索引时重试）。
-     *
-     * @return 8 位邀请码
-     */
-    private String generateUniqueInviteCode() {
-        for (int attempt = 0; attempt < 10; attempt++) {
-            String code = InviteCodes.generate();
-            if (!familyRepository.existsByInviteCode(code)) {
-                return code;
-            }
-        }
-        throw new BusinessException(ErrorCode.INTERNAL_ERROR, "邀请码生成失败，请重试");
-    }
-
-    /**
      * 默认家庭名：昵称 + 「的家」，超长截断到 40 字。
      *
      * @param nickname 昵称
@@ -312,7 +276,7 @@ public class AuthService {
      * 组装登录态。
      *
      * @param user   用户
-     * @param member 成员关系（可为 null：用户已被移出家庭）
+     * @param member 成员关系（可为 null：用户尚未加入任何家庭）
      * @return 登录态
      */
     private TokenResp buildTokenResp(User user, FamilyMember member) {
@@ -329,7 +293,11 @@ public class AuthService {
     }
 
     /**
-     * 组装家庭响应（邀请码仅 owner 可见）。
+     * 组装家庭响应。
+     *
+     * <p>Q7 后旧邀请码链路已整体移除，这里仅保留「邀请码可见性」参数的既有形状
+     * （{@code FamilyResp} / {@code FamilyMapper.toResp} 属 T02 / T03 的 domain 改造范围，
+     * T01 不动 API 契约形状）。字段值恒为 {@code null}，不产生任何旧码数据。</p>
      *
      * @param family 家庭实体
      * @param role   当前用户角色
