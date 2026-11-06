@@ -1220,6 +1220,20 @@ app:
 
 > 实现任务书必须显式引用本节豁免，否则工程师按原条款应停在 T01 之前。
 
+#### 9.8.2 上游实况勘误（2026-11-06 S-1 spike 实证 · 供 T03 实现依据）
+
+S-1 spike（commit `f7753db` / `docs/qa/spike-s1-report.md`）与 T01（commit `758da71`）实测，以下三处以实况为准；原 §9.2 / §11.6 表述保留但**不再作为实现依据**。
+
+| 项 | 原表述 | 实测 | 实现口径 |
+| --- | --- | --- | --- |
+| `openize.isobmff` | 独立 artifact，需一并 vendor `isobmff-*.jar` | 26.5.1 中 `openize.isobmff` 是**同仓源码、与 `openize.heic` 编进同一个 jar**（jar 内 145 entries），上游 POM 无独立 artifact | **只 vendor 1 个 jar**；MIT 许可证文本仍照常归档 |
+| 上游 EXIF 依赖 | 2.19.0 | 上游 POM 声明 `com.drewnoakes:metadata-extractor` **2.20.0** | `<exclusions>` 排除，统一项目 2.19.0；依赖树实测仅 `2.19.0 → xmpcore 6.1.11` |
+| 构建可复现性 | 未规定 | 上游 POM 未设 `outputTimestamp`，同 commit 两次构建 SHA 不同 | 采用 `-Dproject.build.outputTimestamp=2026-05-12T05:00:40Z`，稳定 SHA `23e476205b89570c5eba4a62551b14a3a360570f3ca2db85578db44969425ddf` |
+
+**`decode()` 旋转责任的进一步实证**：26.5.1 在 `getInt32Array()` 阶段自动应用容器 `irot`，`getWidth/getHeight` 直接返回正立后的 **3024×4032**（原 ispe 4032×3024），`HeicImageFrame.toString()` 打印 `4032x3024 270°`；且**只按 `irot`、未按 Exif `Orientation` 补转**。因此 T03 的 `OpenizeHeicTranscoder#decode()` **不得做任何二次旋转**（既不按 `irot`、也不按 `Orientation`），`width/height` 取正立 `BufferedImage` 实测值而非 ispe，`rotationApplied` 仅作审计字段。这条直接防住 R-9 / F-4 的双重旋转陷阱。
+
+> 视觉正立性尚未人工比对（归 S-2）；F-1 / F-2 / F-5 / F-6 夹具由用户决定跳过，S-2 / S-5 仍未 5/5，见 §9.8.1 豁免与 R-14 / R-15。
+
 ### 9.9 `parse_status` 与文案矩阵
 
 | `parse_status` | 判定条件 | 灯箱文案（三种缺失文案） |
