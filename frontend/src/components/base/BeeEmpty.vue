@@ -9,7 +9,16 @@ import BeeIcon from './BeeIcon.vue'
 import type { IconName } from './icon-paths'
 
 interface Props {
-  variant?: 'no-photo' | 'no-album' | 'no-result' | 'no-growth' | 'error'
+  /** v1.1 扩展 3 个无家庭引导变体；原有 5 变体不变（docs/06 §2.2）。 */
+  variant?:
+    | 'no-photo'
+    | 'no-album'
+    | 'no-result'
+    | 'no-growth'
+    | 'error'
+    | 'no-family'
+    | 'join-pending'
+    | 'join-rejected'
   title: string
   description?: string
   actionText?: string
@@ -31,6 +40,9 @@ const ICONS: Record<NonNullable<Props['variant']>, IconName> = {
   'no-result': 'search',
   'no-growth': 'baby',
   error: 'image-broken',
+  'no-family': 'hex',
+  'join-pending': 'hex',
+  'join-rejected': 'info',
 }
 
 /** 蜂巢底纹的 12 个六边形坐标（相对 160×160）。 */

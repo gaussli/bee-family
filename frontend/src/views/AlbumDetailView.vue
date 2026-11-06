@@ -30,6 +30,7 @@ import { useToast } from '@/composables/useToast'
 import { useInfiniteScroll } from '@/composables/useInfiniteScroll'
 import { fileUrl } from '@/utils/fileUrl'
 import { formatDate } from '@/utils/format'
+import { GIF_REJECT_TEXT, SUPPORTED_FORMAT_TEXT, isGifImage } from '@/utils/validate'
 import type { PhotoSort } from '@/api/photo'
 import type { AlbumDetail, Photo } from '@/types/models'
 
@@ -74,6 +75,7 @@ const lightboxOpen = ref<boolean>(false)
 const lightboxIndex = ref<number>(0)
 
 const dragging = ref<boolean>(false)
+const draggingGif = ref<boolean>(false)
 let dragDepth = 0
 
 const selectedCount = computed<number>(() => selected.value.size)
@@ -229,20 +231,39 @@ function onAlbumRemoved(): void {
 }
 
 /* ---------- 拖拽上传（整页遮罩） ---------- */
+/** 拖拽阶段识别 GIF：遮罩内给明确拒绝提示，主文案保持「松开即可上传到《相册名》」。 */
+function detectDraggedGif(event: DragEvent): void {
+  const items = event.dataTransfer?.items
+  if (!items) return
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]
+    if (item.kind !== 'file') continue
+    if (item.type === 'image/gif' || isGifImage(item.getAsFile()?.name ?? '')) {
+      draggingGif.value = true
+      return
+    }
+  }
+}
+
 function onDragEnter(event: DragEvent): void {
   if (!event.dataTransfer?.types.includes('Files')) return
   dragDepth += 1
   dragging.value = true
+  detectDraggedGif(event)
 }
 
 function onDragOver(event: DragEvent): void {
   if (!dragging.value) return
   event.preventDefault()
+  detectDraggedGif(event)
 }
 
 function onDragLeave(): void {
   dragDepth = Math.max(dragDepth - 1, 0)
-  if (dragDepth === 0) dragging.value = false
+  if (dragDepth === 0) {
+    dragging.value = false
+    draggingGif.value = false
+  }
 }
 
 function onDrop(event: DragEvent): void {
@@ -250,6 +271,7 @@ function onDrop(event: DragEvent): void {
   event.preventDefault()
   dragDepth = 0
   dragging.value = false
+  draggingGif.value = false
   const files = event.dataTransfer?.files
   if (!files || files.length === 0) return
   uploadOpen.value = true
@@ -325,6 +347,7 @@ onBeforeUnmount(() => {
         </BeeButton>
         <BeeButton v-if="!selectionMode" variant="ghost" size="sm" @click="enterSelection">选择</BeeButton>
         <BeeButton v-else variant="ghost" size="sm" @click="leaveSelection">取消选择</BeeButton>
+        <span class="bee-album-detail__format-hint">{{ SUPPORTED_FORMAT_TEXT }}</span>
       </div>
 
       <div class="bee-album-detail__toolbar-right">
@@ -408,6 +431,8 @@ onBeforeUnmount(() => {
     <!-- 拖拽遮罩 -->
     <div v-if="dragging" class="bee-album-detail__dropzone">
       <span>松开即可上传到《{{ pageTitle }}》</span>
+      <span class="bee-album-detail__dropzone-sub">{{ SUPPORTED_FORMAT_TEXT }}</span>
+      <span v-if="draggingGif" class="bee-album-detail__dropzone-gif">{{ GIF_REJECT_TEXT }}</span>
     </div>
 
     <Lightbox
@@ -649,8 +674,10 @@ onBeforeUnmount(() => {
   inset: var(--sp-4);
   z-index: 940;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--sp-3);
   border: 2px dashed var(--honey-400);
   border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--honey-50) 92%, transparent);
@@ -659,6 +686,27 @@ onBeforeUnmount(() => {
   font-size: var(--fs-h3);
   font-weight: 600;
   pointer-events: none;
+}
+
+.bee-album-detail__dropzone-sub,
+.bee-album-detail__dropzone-gif {
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+.bee-album-detail__dropzone-gif {
+  color: var(--color-danger);
+}
+
+.bee-album-detail__format-hint {
+  margin-left: var(--sp-2);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
 .bee-album-detail__move-hint {

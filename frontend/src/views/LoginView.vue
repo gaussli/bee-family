@@ -5,7 +5,7 @@
  * <p>左右分栏：左品牌区（`--honey-50` 底 + 蜂巢装饰），右表单区（320px 居中）。
  * `<1024` 隐藏品牌区改为顶部 Logo。错误只落在字段下方，不弹 Toast。</p>
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import BeeButton from '@/components/base/BeeButton.vue'
 import BeeIcon from '@/components/base/BeeIcon.vue'
@@ -14,12 +14,7 @@ import HexPattern from '@/components/business/HexPattern.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { ApiError } from '@/api/http'
-import {
-  validateEmail,
-  validateInviteCode,
-  validateNickname,
-  validatePassword,
-} from '@/utils/validate'
+import { validateEmail, validateNickname, validatePassword } from '@/utils/validate'
 
 type Mode = 'login' | 'register'
 
@@ -32,16 +27,15 @@ const mode = ref<Mode>('login')
 const email = ref<string>('')
 const password = ref<string>('')
 const nickname = ref<string>('')
-const inviteCode = ref<string>('')
 const showPassword = ref<boolean>(false)
 const loading = ref<boolean>(false)
 const formError = ref<string>('')
 
-const errors = ref<{ email: string; password: string; nickname: string; inviteCode: string }>({
+/** 注册表单只有 3 个字段（邮箱 / 密码 / 昵称），不再有任何码字段（docs/06 §9.5）。 */
+const errors = ref<{ email: string; password: string; nickname: string }>({
   email: '',
   password: '',
   nickname: '',
-  inviteCode: '',
 })
 
 const isRegister = computed<boolean>(() => mode.value === 'register')
@@ -51,7 +45,7 @@ function switchMode(next: Mode): void {
   if (mode.value === next) return
   mode.value = next
   formError.value = ''
-  errors.value = { email: '', password: '', nickname: '', inviteCode: '' }
+  errors.value = { email: '', password: '', nickname: '' }
 }
 
 function validate(): boolean {
@@ -60,7 +54,6 @@ function validate(): boolean {
     // 登录只校验非空，注册校验 6-32
     password: validatePassword(password.value, isRegister.value),
     nickname: isRegister.value ? validateNickname(nickname.value) : '',
-    inviteCode: isRegister.value ? validateInviteCode(inviteCode.value) : '',
   }
   return Object.values(errors.value).every((message) => message === '')
 }
@@ -76,12 +69,13 @@ async function onSubmit(): Promise<void> {
         email: email.value.trim(),
         password: password.value,
         nickname: nickname.value.trim(),
-        inviteCode: inviteCode.value.trim() || undefined,
       })
       toast.success('欢迎加入蜜记')
-    } else {
-      await auth.login(email.value.trim(), password.value)
+      // 注册不建家庭、不自动加入：直接进入无家庭引导状态 A（docs/06 §9.5）
+      await router.replace({ name: 'onboarding' })
+      return
     }
+    await auth.login(email.value.trim(), password.value)
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/timeline'
     await router.replace(redirect)
   } catch (error) {
@@ -94,10 +88,6 @@ async function onSubmit(): Promise<void> {
         errors.value.password = '邮箱或密码不正确'
         return
       }
-      if (error.code === 40904) {
-        errors.value.inviteCode = '邀请码无效或已过期'
-        return
-      }
       formError.value = error.message
       return
     }
@@ -106,15 +96,6 @@ async function onSubmit(): Promise<void> {
     loading.value = false
   }
 }
-
-onMounted(() => {
-  // 从「接受邀请」链接进入时预填邀请码
-  const code = route.query.code
-  if (typeof code === 'string' && code) {
-    mode.value = 'register'
-    inviteCode.value = code.toUpperCase()
-  }
-})
 </script>
 
 <template>
@@ -217,14 +198,6 @@ onMounted(() => {
               icon="baby"
               :error="errors.nickname"
               :maxlength="32"
-            />
-            <BeeInput
-              v-model="inviteCode"
-              label="邀请码（选填）"
-              placeholder="8 位字母数字"
-              icon="copy"
-              :error="errors.inviteCode"
-              :maxlength="8"
             />
           </template>
 

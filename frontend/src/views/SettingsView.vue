@@ -21,8 +21,11 @@ import { useAuthStore } from '@/stores/auth'
 import { useFamilyStore } from '@/stores/family'
 import { useToast } from '@/composables/useToast'
 import { formatBytes, formatNumber } from '@/utils/format'
-import { validateNickname, validatePassword } from '@/utils/validate'
+import { SUPPORTED_FORMAT_TEXT, validateNickname, validatePassword } from '@/utils/validate'
 import type { Overview } from '@/types/models'
+
+/** `/settings/account` 为 blank 布局：只渲染账号子页，其余 3 个子页 / 左导航 / 危险区隐藏（Q9）。 */
+const props = withDefaults(defineProps<{ accountOnly?: boolean }>(), { accountOnly: false })
 
 type TabKey = 'account' | 'family' | 'data' | 'about'
 
@@ -135,6 +138,7 @@ async function confirmDelete(): Promise<void> {
 
 async function load(): Promise<void> {
   account.nickname = auth.nickname
+  if (props.accountOnly) return
   familyName.value = family.family?.name ?? ''
   if (!family.family) {
     try {
@@ -154,6 +158,10 @@ async function load(): Promise<void> {
 watch(
   () => route.query.tab,
   (value) => {
+    if (props.accountOnly) {
+      activeTab.value = 'account'
+      return
+    }
     const key = typeof value === 'string' ? (value as TabKey) : 'account'
     if (tabs.some((tab) => tab.key === key)) activeTab.value = key
   },
@@ -169,8 +177,12 @@ watch(
 )
 
 onMounted(async () => {
-  const key = typeof route.query.tab === 'string' ? (route.query.tab as TabKey) : 'account'
-  if (tabs.some((tab) => tab.key === key)) activeTab.value = key
+  if (props.accountOnly) {
+    activeTab.value = 'account'
+  } else {
+    const key = typeof route.query.tab === 'string' ? (route.query.tab as TabKey) : 'account'
+    if (tabs.some((tab) => tab.key === key)) activeTab.value = key
+  }
   await load()
 })
 </script>
@@ -180,7 +192,7 @@ onMounted(async () => {
     <BeePageHeader title="设置" description="账号、家庭与数据都在这里管理。" />
 
     <div class="bee-settings-view__layout">
-      <nav class="bee-settings-view__nav" aria-label="设置分区">
+      <nav v-if="!accountOnly" class="bee-settings-view__nav" aria-label="设置分区">
         <button
           v-for="tab in tabs"
           :key="tab.key"
@@ -195,7 +207,7 @@ onMounted(async () => {
 
       <div class="bee-settings-view__content">
         <!-- 账号 -->
-        <section v-if="activeTab === 'account'" class="bee-settings-view__section">
+        <section v-if="activeTab === 'account' || accountOnly" class="bee-settings-view__section">
           <BeeCard>
             <template #header>
               <span>账号信息</span>
@@ -231,7 +243,13 @@ onMounted(async () => {
             </form>
           </BeeCard>
 
-          <div class="bee-settings-view__danger">
+          <!-- 静态隐私提示（D-4）：常驻、不做开关、不出现 Toggle / Checkbox -->
+          <div class="bee-settings-view__static-notes">
+            <p>照片的拍摄参数与位置信息对所有家庭成员可见</p>
+            <p>{{ SUPPORTED_FORMAT_TEXT }}</p>
+          </div>
+
+          <div v-if="!accountOnly && auth.isOwner" class="bee-settings-view__danger">
             <div class="bee-settings-view__danger-head">
               <h2>危险区域</h2>
               <span>删除家庭 <BeeIcon name="info" :size="13" /> 不可恢复</span>
@@ -244,7 +262,7 @@ onMounted(async () => {
         </section>
 
         <!-- 家庭 -->
-        <section v-else-if="activeTab === 'family'" class="bee-settings-view__section">
+        <section v-else-if="!accountOnly && activeTab === 'family'" class="bee-settings-view__section">
           <BeeCard>
             <template #header>
               <span>家庭信息</span>
@@ -266,7 +284,7 @@ onMounted(async () => {
         </section>
 
         <!-- 数据 -->
-        <section v-else-if="activeTab === 'data'" class="bee-settings-view__section">
+        <section v-else-if="!accountOnly && activeTab === 'data'" class="bee-settings-view__section">
           <BeeCard>
             <template #header>
               <span>存储占用</span>
@@ -308,7 +326,7 @@ onMounted(async () => {
         </section>
 
         <!-- 关于 -->
-        <section v-else class="bee-settings-view__section">
+        <section v-else-if="!accountOnly" class="bee-settings-view__section">
           <BeeCard>
             <template #header>
               <span>关于蜜记</span>
@@ -431,6 +449,18 @@ onMounted(async () => {
   display: flex;
   justify-content: flex-end;
   gap: var(--sp-2);
+}
+
+.bee-settings-view__static-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  color: var(--text-tertiary);
 }
 
 .bee-settings-view__danger {

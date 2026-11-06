@@ -1,101 +1,89 @@
 <script setup lang="ts">
 /**
- * 应用外壳：侧栏（≥768）+ 顶栏 + 内容区 + 移动端 TabBar + 全局上传浮层。
+ * 应用外壳（docs/06 §3、§4；docs/07 §10.2）。
  *
- * <p>滚动模型：窗口滚动，顶栏 `position: sticky; top: 0`。这样时间轴的月份分组标题
- * 用 `top: var(--topbar-h)` 就能精确吸附在顶栏下方（见 02 文档 §5.2）。</p>
+ * <p>导航互斥单一真源：`useBreakpoint().isMobile`（`matchMedia` 等价的 768 判定）。
+ * ≥768 只挂载 `TopNav`，<768 只挂载精简 `TopBar` + 底部 `TabBar`，
+ * 两套主导航**同一时刻只存在一套**（`v-if` 卸载而非仅 CSS 隐藏）；
+ * 各组件内的媒体查询只是第二道保险。`SideNav` 与汉堡抽屉永久移除。</p>
  *
- * <p>数据引导：进入受保护区域后拉一次 `/auth/me`（刷新页面时内存里没有用户）
- * 和家庭聚合数据（成员、宝宝、邀请码），失败不阻塞页面渲染。</p>
+ * <p>滚动模型：窗口滚动，顶栏 `position: sticky; top: 0`；内容区仍
+ * `max-width: 1200px` / `padding: 0 var(--container-pad)`，1440 下内容宽 1136px，
+ * 所有栅格与 5 列照片网格判定不变。</p>
+ *
+ * <p>数据引导：进入受保护区域后拉一次 `/auth/me`（刷新页面内存里没有上下文）
+ * 与家庭聚合数据（成员 / 宝宝 / 家庭码）；owner + admin 额外拉待审角标计数。
+ * 任一失败都不阻塞页面骨架（后端 v1.0 未实现新接口时属预期）。</p>
  */
 import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import SideNav from './SideNav.vue'
+import TopNav from './TopNav.vue'
 import TopBar from './TopBar.vue'
 import TabBar from './TabBar.vue'
-import BeeIcon from '@/components/base/BeeIcon.vue'
 import UploadPanel from '@/components/business/UploadPanel.vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useAuthStore } from '@/stores/auth'
 import { useFamilyStore } from '@/stores/family'
+import { useSwitchStore } from '@/stores/switch'
 
 const route = useRoute()
 const auth = useAuthStore()
 const family = useFamilyStore()
+const switchStore = useSwitchStore()
+const { isMobile } = useBreakpoint()
 
-const navOpen = ref<boolean>(false)
 const uploadOpen = ref<boolean>(false)
 
 watch(
   () => route.fullPath,
   () => {
-    navOpen.value = false
+    // 路由变化时收起上传浮层，避免旧相册资源残留在浮层里
+    uploadOpen.value = false
   },
 )
 
+function viewQueue(): void {
+  uploadOpen.value = true
+  switchStore.focusUploadQueue()
+}
+
 onMounted(async () => {
   if (!auth.token) return
-  if (!auth.user) {
+  if (!auth.bootstrapped) {
     try {
       await auth.fetchMe()
     } catch {
       // 401 已由 axios 拦截器统一处理，这里静默
     }
   }
+  // activeBabyId 按 familyId 分键（docs/07 §10.3 第 1 / 11 项）
+  family.bindFamily(auth.activeFamilyId)
   try {
     await family.loadAll()
   } catch {
     // 家庭数据拉取失败不影响页面骨架，页面内各自有错误态
+  }
+  if (auth.canReview) {
+    try {
+      await family.fetchPendingReviewCount()
+    } catch {
+      // 待审角标接口在后端升级前可能不存在：角标不渲染即可
+    }
   }
 })
 </script>
 
 <template>
   <div class="bee-shell">
-    <SideNav />
+    <!-- 互斥：≥768 顶部导航；<768 精简顶栏 + 底部 TabBar。任一时刻只挂载一套主导航 -->
+    <TopNav v-if="!isMobile" @upload="uploadOpen = true" @view-queue="viewQueue" />
+    <TopBar v-else @view-queue="viewQueue" />
 
-    <div class="bee-shell__main">
-      <TopBar @upload="uploadOpen = true" @open-nav="navOpen = true" />
-      <main class="bee-shell__content">
-        <slot />
-      </main>
-    </div>
+    <main class="bee-shell__content">
+      <slot />
+    </main>
 
-    <TabBar />
-
-    <!-- 移动端侧栏改为左侧抽屉（280px，--dur-slow 滑入） -->
-    <Transition name="bee-nav-drawer">
-      <div v-if="navOpen" class="bee-nav-drawer" role="presentation" @click.self="navOpen = false">
-        <aside class="bee-nav-drawer__panel" role="dialog" aria-modal="true" aria-label="导航">
-          <header class="bee-nav-drawer__head">
-            <RouterLink to="/timeline" class="bee-nav-drawer__logo" @click="navOpen = false">
-              <BeeIcon name="hex" :size="22" />
-              <strong>蜜记</strong>
-            </RouterLink>
-            <button class="bee-nav-drawer__close" type="button" aria-label="关闭导航" @click="navOpen = false">
-              <BeeIcon name="close" :size="18" />
-            </button>
-          </header>
-
-          <nav class="bee-nav-drawer__nav">
-            <RouterLink class="bee-nav-drawer__item" to="/timeline">
-              <BeeIcon name="grid" :size="18" />时间轴
-            </RouterLink>
-            <RouterLink class="bee-nav-drawer__item" to="/albums">
-              <BeeIcon name="camera" :size="18" />相册
-            </RouterLink>
-            <RouterLink class="bee-nav-drawer__item" to="/growth">
-              <BeeIcon name="baby" :size="18" />成长记录
-            </RouterLink>
-            <RouterLink class="bee-nav-drawer__item" to="/family">
-              <BeeIcon name="user" :size="18" />家庭成员
-            </RouterLink>
-            <RouterLink class="bee-nav-drawer__item" to="/settings">
-              <BeeIcon name="settings" :size="18" />设置
-            </RouterLink>
-          </nav>
-        </aside>
-      </div>
-    </Transition>
+    <TabBar v-if="isMobile" />
 
     <UploadPanel :open="uploadOpen" :album-id="null" @close="uploadOpen = false" />
   </div>
@@ -104,15 +92,9 @@ onMounted(async () => {
 <style scoped>
 .bee-shell {
   display: flex;
-  min-height: 100vh;
-  align-items: flex-start;
-}
-
-.bee-shell__main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
   flex-direction: column;
+  min-height: 100vh;
+  align-items: stretch;
 }
 
 .bee-shell__content {
@@ -121,101 +103,6 @@ onMounted(async () => {
   max-width: var(--container-max);
   margin: 0 auto;
   padding: var(--sp-8) var(--container-pad) var(--sp-16);
-}
-
-/* ---------- 移动端抽屉 ---------- */
-.bee-nav-drawer {
-  position: fixed;
-  inset: 0;
-  z-index: 920;
-  background: var(--overlay-scrim);
-  display: flex;
-}
-
-.bee-nav-drawer__panel {
-  display: flex;
-  flex-direction: column;
-  width: 280px;
-  height: 100%;
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-lg);
-}
-
-.bee-nav-drawer__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: var(--topbar-h);
-  padding: 0 var(--sp-4);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.bee-nav-drawer__logo {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  color: var(--honey-500);
-  font-family: var(--font-display);
-  font-size: 17px;
-  font-weight: 600;
-}
-
-.bee-nav-drawer__logo strong {
-  color: var(--text-primary);
-}
-
-.bee-nav-drawer__close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--r-md);
-  color: var(--text-tertiary);
-}
-
-.bee-nav-drawer__nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--sp-3);
-}
-
-.bee-nav-drawer__item {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  height: 44px;
-  padding: 0 var(--sp-3);
-  border-radius: var(--r-md);
-  font-size: var(--fs-body-lg);
-  color: var(--text-secondary);
-}
-
-.bee-nav-drawer__item.router-link-active {
-  background: var(--honey-100);
-  color: var(--text-brand);
-  font-weight: 600;
-}
-
-.bee-nav-drawer-enter-active,
-.bee-nav-drawer-leave-active {
-  transition: opacity var(--dur-base) var(--ease-out);
-}
-
-.bee-nav-drawer-enter-active .bee-nav-drawer__panel,
-.bee-nav-drawer-leave-active .bee-nav-drawer__panel {
-  transition: transform var(--dur-slow) var(--ease-out);
-}
-
-.bee-nav-drawer-enter-from,
-.bee-nav-drawer-leave-to {
-  opacity: 0;
-}
-
-.bee-nav-drawer-enter-from .bee-nav-drawer__panel,
-.bee-nav-drawer-leave-to .bee-nav-drawer__panel {
-  transform: translateX(-100%);
 }
 
 @media (max-width: 767px) {

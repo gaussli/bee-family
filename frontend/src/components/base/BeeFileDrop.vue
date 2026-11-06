@@ -4,9 +4,18 @@
  *
  * 默认渲染为一块虚线投放区（可被 `default` 插槽替换成自定义触发器）。
  * 拖拽进入时叠加高亮边框，离开时复原（用计数器避免子元素冒泡导致抖动）。
+ *
+ * v1.1：accept 白名单 = JPEG / PNG / WebP / HEIC(HEIF)，**排除 GIF**；
+ * GIF 在选择 / 拖放阶段直接过滤并通过 `rejected` 事件告知父级，不进入上传队列。
  */
 import { ref } from 'vue'
 import BeeIcon from './BeeIcon.vue'
+import {
+  GIF_REJECT_TEXT,
+  SUPPORTED_FORMAT_TEXT,
+  UPLOAD_ACCEPT,
+  isGifImage,
+} from '@/utils/validate'
 
 interface Props {
   accept?: string
@@ -16,16 +25,17 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  accept: 'image/jpeg,image/png,image/webp',
+  accept: UPLOAD_ACCEPT,
   multiple: true,
   disabled: false,
   overlayText: '松开即可上传',
 })
 
-const emit = defineEmits<{ files: [files: File[]] }>()
+const emit = defineEmits<{ files: [files: File[]]; rejected: [count: number] }>()
 
 const inputRef = ref<HTMLInputElement | null>(null)
 const dragging = ref<boolean>(false)
+const draggingGif = ref<boolean>(false)
 let dragDepth = 0
 
 function openPicker(): void {
@@ -42,8 +52,26 @@ function onInputChange(event: Event): void {
 
 function emitFiles(list: FileList | null): void {
   if (!list || list.length === 0) return
-  const files = Array.from(list)
-  emit('files', props.multiple ? files : files.slice(0, 1))
+  const all = Array.from(list)
+  const accepted = all.filter((file) => !isGifImage(file.name))
+  const rejected = all.length - accepted.length
+  if (rejected > 0) emit('rejected', rejected)
+  if (accepted.length === 0) return
+  emit('files', props.multiple ? accepted : accepted.slice(0, 1))
+}
+
+/** 拖拽时按 DataTransferItem.type 提前识别 GIF，遮罩内给明确拒绝提示。 */
+function detectDraggedGif(event: DragEvent): void {
+  const items = event.dataTransfer?.items
+  if (!items) return
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]
+    if (item.kind !== 'file') continue
+    if (item.type === 'image/gif' || isGifImage(item.getAsFile()?.name ?? '')) {
+      draggingGif.value = true
+      return
+    }
+  }
 }
 
 function onDragEnter(event: DragEvent): void {
@@ -51,18 +79,23 @@ function onDragEnter(event: DragEvent): void {
   event.preventDefault()
   dragDepth += 1
   dragging.value = true
+  detectDraggedGif(event)
 }
 
 function onDragOver(event: DragEvent): void {
   if (props.disabled) return
   event.preventDefault()
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+  detectDraggedGif(event)
 }
 
 function onDragLeave(): void {
   if (props.disabled) return
   dragDepth = Math.max(dragDepth - 1, 0)
-  if (dragDepth === 0) dragging.value = false
+  if (dragDepth === 0) {
+    dragging.value = false
+    draggingGif.value = false
+  }
 }
 
 function onDrop(event: DragEvent): void {
@@ -70,6 +103,7 @@ function onDrop(event: DragEvent): void {
   event.preventDefault()
   dragDepth = 0
   dragging.value = false
+  draggingGif.value = false
   emitFiles(event.dataTransfer?.files ?? null)
 }
 </script>
@@ -93,11 +127,15 @@ function onDrop(event: DragEvent): void {
       <div class="bee-filedrop__inner">
         <BeeIcon name="upload" :size="28" />
         <p class="bee-filedrop__title">点击选择照片，或拖拽到这里上传</p>
-        <p class="bee-filedrop__hint">支持 JPG / PNG / WebP，单张不超过 20MB</p>
+        <p class="bee-filedrop__hint">{{ SUPPORTED_FORMAT_TEXT }}，单张不超过 20MB</p>
       </div>
     </slot>
 
-    <span v-if="dragging" class="bee-filedrop__overlay">{{ overlayText }}</span>
+    <span v-if="dragging" class="bee-filedrop__overlay">
+      <span class="bee-filedrop__overlay-main">{{ overlayText }}</span>
+      <span class="bee-filedrop__overlay-sub">{{ SUPPORTED_FORMAT_TEXT }}</span>
+      <span v-if="draggingGif" class="bee-filedrop__overlay-gif">{{ GIF_REJECT_TEXT }}</span>
+    </span>
 
     <input
       ref="inputRef"
@@ -171,14 +209,32 @@ function onDrop(event: DragEvent): void {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--sp-2);
   border-radius: var(--r-lg);
   background: var(--honey-100);
   color: var(--text-brand);
+  pointer-events: none;
+}
+
+.bee-filedrop__overlay-main {
   font-size: var(--fs-body-lg);
   font-weight: 600;
-  pointer-events: none;
+}
+
+.bee-filedrop__overlay-sub {
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  color: var(--text-tertiary);
+}
+
+.bee-filedrop__overlay-gif {
+  max-width: 90%;
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  color: var(--color-danger);
 }
 
 .bee-filedrop__input {

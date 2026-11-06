@@ -5,6 +5,14 @@
 :root {
   /* 灯箱图像区「照片衬底」色（02 文档 §4.11 明确为例外，不属于主题色） */
   --photo-void: #1C1814;
+
+  /* docs/06 §2.3 布局层级常量（不是色值 token，允许字面量，集中在此管理） */
+  --z-topbar: 100;
+  --z-topbar-dropdown: 200;
+  --z-search-overlay: 300;
+  --z-upload-panel: 900;
+  --z-toast: 950;
+  --z-lightbox: 1000;
 }
 
 html,
@@ -87,7 +95,8 @@ body::before {
 @media (max-width: 1023px) {
   :root {
     --container-pad: 24px;
-    --sidebar-w: 72px;
+    /* SideNav 已停用，不再有 72px 图标态（docs/06 §10.1 C-1）。 */
+    --sidebar-w: 0px;
   }
 }
 

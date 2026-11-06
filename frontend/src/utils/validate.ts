@@ -1,10 +1,27 @@
 /**
- * 前端表单校验规则（与后端 @Size/@DecimalMin 双写，见 docs §11.7）。
+ * 前端表单与上传前置校验规则（与后端 @Size / ImageValidator 双写，见 docs/07 §10.5）。
+ *
+ * v1.1 白名单：**JPEG / PNG / WebP / HEIC(HEIF)**，明确排除 GIF；
+ * 不留任何可配置开关，不留「后续开启」隐式入口。GIF 在选择阶段即被拦截，
+ * 不会进入上传队列，因此 HEIC 四态里不存在任何 GIF 分支。
  */
 
-export const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'] as const
-export const BLOCKED_EXTENSIONS = ['heic', 'heif'] as const
+export const ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'] as const
+export const HEIC_EXTENSIONS = ['heic', 'heif'] as const
+/** 明确排除：GIF 本期不纳入白名单。 */
+export const GIF_EXTENSIONS = ['gif'] as const
 export const MAX_FILE_SIZE = 20 * 1024 * 1024
+
+/** 上传控件 accept：排除 GIF；同时给出 mime 与扩展名以兼容不同浏览器。 */
+export const UPLOAD_ACCEPT =
+  'image/jpeg,image/png,image/webp,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.heic,.heif'
+
+/** 全站统一的支持格式声明（docs/06 §9.4「必须出现」）。 */
+export const SUPPORTED_FORMAT_TEXT = '支持 JPG / PNG / WebP / HEIC'
+/** 唯一允许出现「GIF」字样的明示拒绝提示（docs/06 §9.3）。 */
+export const GIF_REJECT_TEXT = '暂不支持 GIF 动图，请上传 JPG / PNG / WebP / HEIC 格式的照片'
+/** C-12：HEIC 成功态 / 汇总 Toast / 浮层常驻说明 / 灯箱 hint 共用的尾句。 */
+export const HEIC_COPY_TEXT = '已生成 1600px 展示副本，原图保留'
 
 export interface FieldRule {
   min?: number
@@ -14,7 +31,8 @@ export interface FieldRule {
 }
 
 export const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-export const INVITE_CODE_PATTERN = /^[A-Za-z0-9]{8}$/
+/** 家庭码：10 位去混淆字符；展示时格式化为 XXXXX-XXXXX。 */
+export const FAMILY_CODE_PATTERN = /^[A-Z0-9]{10}$/
 
 /**
  * 取小写扩展名（不含点）。
@@ -27,7 +45,7 @@ export function extensionOf(fileName: string): string {
 }
 
 /**
- * 是否为本产品支持的图片扩展名（jpg/jpeg/png/webp）。
+ * 是否为本产品支持的图片扩展名（jpg/jpeg/png/webp/heic/heif）。
  *
  * @param fileName 文件名
  */
@@ -36,12 +54,21 @@ export function isAllowedImage(fileName: string): boolean {
 }
 
 /**
- * 是否为「明确不支持」的格式（HEIC/HEIF，需给 iPhone 专属提示）。
+ * 是否为 HEIC/HEIF（触发四态、HEIC 占位块与格式 Chip）。
  *
  * @param fileName 文件名
  */
-export function isUnsupportedImage(fileName: string): boolean {
-  return (BLOCKED_EXTENSIONS as readonly string[]).includes(extensionOf(fileName))
+export function isHeicImage(fileName: string): boolean {
+  return (HEIC_EXTENSIONS as readonly string[]).includes(extensionOf(fileName))
+}
+
+/**
+ * 是否为明确排除的 GIF（选择阶段拦截，不进入上传队列）。
+ *
+ * @param fileName 文件名
+ */
+export function isGifImage(fileName: string): boolean {
+  return (GIF_EXTENSIONS as readonly string[]).includes(extensionOf(fileName))
 }
 
 /**
@@ -51,6 +78,15 @@ export function isUnsupportedImage(fileName: string): boolean {
  */
 export function isTooLarge(size: number): boolean {
   return size > MAX_FILE_SIZE
+}
+
+/**
+ * 家庭码输入归一：去空白、忽略连字符、统一大写。
+ *
+ * @param input 用户输入
+ */
+export function normalizeFamilyCode(input: string): string {
+  return input.replace(/[\s-]/g, '').toUpperCase()
 }
 
 /**
@@ -99,22 +135,6 @@ export function validateNickname(value: string): string {
   }
   if (trimmed.length > 32) {
     return '昵称长度不能超过 32 个字符'
-  }
-  return ''
-}
-
-/**
- * 邀请码校验（选填，填写时必须是 8 位字母数字）。
- *
- * @param value 输入
- */
-export function validateInviteCode(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) {
-    return ''
-  }
-  if (!INVITE_CODE_PATTERN.test(trimmed)) {
-    return '邀请码为 8 位字母数字'
   }
   return ''
 }

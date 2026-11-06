@@ -208,3 +208,86 @@ export function todayString(): string {
   const now = new Date()
   return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`
 }
+
+/**
+ * 家庭码展示格式 `XXXXX-XXXXX`（服务端存不带连字符的 CHAR(10)）。
+ * 输入不足 10 位时也按已输入部分插入连字符，便于边输入边看。
+ *
+ * @param code 原始 10 位码（或输入中的片段）
+ */
+export function formatFamilyCode(code: string): string {
+  const clean = code.replace(/[\s-]/g, '').toUpperCase().slice(0, 10)
+  if (clean.length <= 5) return clean
+  return `${clean.slice(0, 5)}-${clean.slice(5)}`
+}
+
+/**
+ * 「第 N 次申请」（docs/06 §5.4、§6.5）。
+ *
+ * @param count 累计申请次数
+ */
+export function attemptText(count: number): string {
+  const safe = Number.isFinite(count) && count > 0 ? Math.floor(count) : 1
+  return `第 ${safe} 次申请`
+}
+
+/**
+ * GPS 十进制度**原文**：不四舍五入、不补零、不换算度分秒、不接地理编码。
+ * 只在两段原文都存在时返回一行，否则返回空串（整行省略，不渲染占位符）。
+ *
+ * @param latitudeRaw  原始纬度字符串
+ * @param longitudeRaw 原始经度字符串
+ */
+export function gpsRaw(latitudeRaw: string | null | undefined, longitudeRaw: string | null | undefined): string {
+  if (!latitudeRaw || !longitudeRaw) return ''
+  return `${latitudeRaw}, ${longitudeRaw}`
+}
+
+/**
+ * 相机行：机身厂商 + 机身型号合并；缺一段只保留存在的段，都不存在返回空串。
+ */
+export function cameraName(make: string | null | undefined, model: string | null | undefined): string {
+  const left = (make ?? '').trim()
+  const right = (model ?? '').trim()
+  if (!left && !right) return ''
+  if (!left) return right
+  if (!right) return left
+  return right.startsWith(left) ? right : `${left} ${right}`
+}
+
+/**
+ * 参数行：把非空的段用 ` · ` 连接；缺失段省略，绝不留 `—` 占位。
+ *
+ * @param parts 光圈 / 快门 / ISO / 焦距等片段
+ */
+export function exposureLine(parts: (string | null | undefined)[]): string {
+  return parts
+    .map((part) => (part ?? '').trim())
+    .filter((part) => part.length > 0)
+    .join(' · ')
+}
+
+/**
+ * 文件行：像素尺寸 + 文件大小；由图片头兜底，缺一段只保留存在的段。
+ */
+export function fileDimension(
+  width: number | null | undefined,
+  height: number | null | undefined,
+  bytes: number | null | undefined,
+): string {
+  const parts: string[] = []
+  if (width && height) parts.push(`${width} × ${height}`)
+  if (bytes && bytes > 0) parts.push(formatBytes(bytes))
+  return parts.join(' · ')
+}
+
+/**
+ * 成对字段合并（曝光模式 / 测光模式、白平衡 / 闪光灯、软件 / 修改时间）。
+ * 缺一段只保留存在的段，都不存在返回空串。
+ */
+export function pairText(left: string | null | undefined, right: string | null | undefined): string {
+  const parts = [left, right]
+    .map((part) => (part ?? '').trim())
+    .filter((part) => part.length > 0)
+  return parts.join(' / ')
+}

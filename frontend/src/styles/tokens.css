@@ -85,10 +85,14 @@
   /* 布局 */
   --container-max: 1200px;
   --container-pad: 32px;
-  --sidebar-w: 240px;
+  /* C-1：≥768 SideNav 永久移除，重定义为 0；保留变量名以免 02 文档其它引用失效。 */
+  --sidebar-w: 0px;
   --topbar-h: 64px;
   --tabbar-h: 56px;
   --grid-gutter: 24px;
+
+  /* D-6：顶栏背景语义别名，值取自 02 文档 §4.1 已有的硬编码，不是新色值。 */
+  --bg-topbar: rgba(251, 247, 241, 0.86);
 }
 
 @media (prefers-reduced-motion: reduce) {

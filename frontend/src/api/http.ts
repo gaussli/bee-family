@@ -1,10 +1,40 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios'
-import type { ApiResponse } from '@/types/api'
+import { ERROR_MESSAGE, type ApiResponse } from '@/types/api'
 
 /** localStorage 键名：仅 token 持久化，其余上下文由 /auth/me 拉取 */
 export const TOKEN_KEY = 'bee.token'
-/** 当前选中的宝宝 id（家庭页与成长页共享） */
+/**
+ * 当前选中的宝宝 id 的 localStorage 键前缀。
+ *
+ * v1.1 按 familyId 分键（`bee.activeBabyId.{familyId}`），切换家庭时禁止沿用旧值
+ * （docs/07 §10.3 第 1 / 11 项）。保留该常量作为前缀与 v1.0 兼容键名。
+ */
 export const ACTIVE_BABY_KEY = 'bee.activeBabyId'
+
+/**
+ * 按家庭生成 activeBabyId 存储键；无家庭时回落到 v1.0 单键。
+ *
+ * @param familyId 当前激活家庭 id
+ */
+export function activeBabyStorageKey(familyId: number | null): string {
+  return familyId === null ? ACTIVE_BABY_KEY : `${ACTIVE_BABY_KEY}.${familyId}`
+}
+
+/** 清理所有家庭相关的 activeBabyId 键（登出 / 改密码时调用，不误清 token）。 */
+export function clearActiveBabyKeys(): void {
+  try {
+    const keys: string[] = []
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (key && (key === ACTIVE_BABY_KEY || key.startsWith(`${ACTIVE_BABY_KEY}.`))) {
+        keys.push(key)
+      }
+    }
+    for (const key of keys) localStorage.removeItem(key)
+  } catch {
+    // 隐私模式下 localStorage 不可写
+  }
+}
 
 /**
  * 统一业务异常。
@@ -25,15 +55,16 @@ export class ApiError extends Error {
     this.traceId = traceId
   }
 
-  /** 是否为登录态失效类错误（40100/40103 等） */
+  /** 是否为登录态失效类错误（40100/40103 等）；40304/40305 不在此区间，不会误清 token。 */
   get isAuthError(): boolean {
     return this.code >= 40100 && this.code < 40200
   }
 }
 
-type UnauthorizedHandler = () => void
+type Handler = () => void
 
-let unauthorizedHandler: UnauthorizedHandler | null = null
+let unauthorizedHandler: Handler | null = null
+let noActiveFamilyHandler: Handler | null = null
 let redirecting = false
 
 /**
@@ -41,8 +72,20 @@ let redirecting = false
  *
  * @param handler 处理函数
  */
-export function setUnauthorizedHandler(handler: UnauthorizedHandler): void {
+export function setUnauthorizedHandler(handler: Handler): void {
   unauthorizedHandler = handler
+}
+
+/**
+ * 注册 40304 NO_ACTIVE_FAMILY 处理器（由 main.ts 注入）。
+ *
+ * 无家庭态是业务层概念：只做路由收敛到 `/onboarding`，**不清 token、不弹 danger Toast**
+ * （docs/07 §6.3、§10.1）。
+ *
+ * @param handler 处理函数
+ */
+export function setNoActiveFamilyHandler(handler: Handler): void {
+  noActiveFamilyHandler = handler
 }
 
 /** 读取本地 token（fileUrl 与请求拦截器共用，唯一读 localStorage 的地方） */
@@ -71,6 +114,13 @@ instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config
 })
 
+/** 40301 差异化 message、failures[].message 等一律透传，不在此做任何本地文案映射。 */
+function dispatchContextError(code: number): void {
+  if (code === 40304 && noActiveFamilyHandler) {
+    noActiveFamilyHandler()
+  }
+}
+
 // 响应拦截：拆信封 + 归一化异常
 instance.interceptors.response.use(
   (response) => {
@@ -79,6 +129,7 @@ instance.interceptors.response.use(
       if (payload.code === 0) {
         return payload.data
       }
+      dispatchContextError(payload.code)
       throw new ApiError(response.status, payload.code, payload.message, payload.traceId)
     }
     return response.data
@@ -89,7 +140,7 @@ instance.interceptors.response.use(
       message?: string
     }
     if (!err.response) {
-      return Promise.reject(new ApiError(-1, -1, '网络异常，请检查连接'))
+      return Promise.reject(new ApiError(-1, -1, ERROR_MESSAGE[-1]))
     }
     const body = err.response.data
     const apiError = new ApiError(
@@ -105,6 +156,8 @@ instance.interceptors.response.use(
       window.setTimeout(() => {
         redirecting = false
       }, 500)
+    } else if (apiError.code === 40304) {
+      dispatchContextError(apiError.code)
     }
     return Promise.reject(apiError)
   },

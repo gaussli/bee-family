@@ -11,23 +11,30 @@
  *   cd frontend && npm run verify
  *
  * 覆盖范围（只测纯函数，不测组件渲染）：
- *   - src/utils/format.ts   日期 / 体积 / 年龄 / 高亮（含 XSS 转义）
- *   - src/utils/validate.ts 表单校验规则（与后端双写的阈值一致性）
+ *   - src/utils/format.ts   日期 / 体积 / 年龄 / 高亮（含 XSS 转义）/ 家庭码 / EXIF 行
+ *   - src/utils/validate.ts 表单校验规则与 v1.1 图片白名单（与后端双写的阈值一致性）
  */
 
 import assert from 'node:assert/strict'
 import {
+  attemptText,
+  cameraName,
   escapeHtml,
+  exposureLine,
+  fileDimension,
   formatAge,
   formatBytes,
   formatDate,
   formatDateTime,
   formatDecimal,
+  formatFamilyCode,
   formatMonthDay,
   formatNumber,
   formatWeekday,
+  gpsRaw,
   highlight,
   monthLabel,
+  pairText,
   parseDate,
   todayString,
 } from '../src/utils/format.ts'
@@ -35,10 +42,11 @@ import {
   MAX_FILE_SIZE,
   extensionOf,
   isAllowedImage,
+  isGifImage,
+  isHeicImage,
   isTooLarge,
-  isUnsupportedImage,
+  normalizeFamilyCode,
   validateEmail,
-  validateInviteCode,
   validateNickname,
   validatePassword,
   validateRange,
@@ -207,7 +215,46 @@ test('highlight: 中文重复出现时每处都高亮', () => {
   assert.equal(output.match(/<mark>/g).length, 2)
 })
 
-console.log('\n[validate.ts] 上传前置校验')
+console.log('\n[format.ts] v1.1 家庭码与 EXIF 展示行')
+
+test('formatFamilyCode: 10 位码展示为 XXXXX-XXXXX，忽略连字符并转大写', () => {
+  assert.equal(formatFamilyCode('BEE7KM3Q92'), 'BEE7K-M3Q92')
+  assert.equal(formatFamilyCode('bee7k-m3q92'), 'BEE7K-M3Q92')
+  assert.equal(formatFamilyCode('BEE7K'), 'BEE7K')
+  assert.equal(formatFamilyCode(''), '')
+})
+
+test('attemptText: 「第 N 次申请」，非法值回落到 1', () => {
+  assert.equal(attemptText(2), '第 2 次申请')
+  assert.equal(attemptText(1), '第 1 次申请')
+  assert.equal(attemptText(Number.NaN), '第 1 次申请')
+})
+
+test('gpsRaw: 精确十进制度原文不做四舍五入 / 补零 / 度分秒换算', () => {
+  assert.equal(gpsRaw('36.067123', '120.382671'), '36.067123, 120.382671')
+  assert.equal(gpsRaw('36.06', '120.38'), '36.06, 120.38')
+  assert.equal(gpsRaw('36.067123', null), '')
+  assert.equal(gpsRaw(null, null), '')
+})
+
+test('cameraName / exposureLine / pairText: 缺段省略，绝不产生破折号占位', () => {
+  assert.equal(cameraName('Apple', 'iPhone 15 Pro'), 'Apple iPhone 15 Pro')
+  assert.equal(cameraName(null, 'iPhone 15 Pro'), 'iPhone 15 Pro')
+  assert.equal(cameraName(null, null), '')
+  assert.equal(exposureLine(['f/1.8', null, 'ISO 125', '']), 'f/1.8 · ISO 125')
+  assert.equal(exposureLine([]), '')
+  assert.equal(pairText('程序自动', '评价测光'), '程序自动 / 评价测光')
+  assert.equal(pairText('自动', null), '自动')
+  assert.equal(pairText(null, null), '')
+})
+
+test('fileDimension: 像素尺寸 + 体积，由图片头兜底时缺段只保留存在的段', () => {
+  assert.equal(fileDimension(4032, 3024, 4823456), '4032 × 3024 · 4.6 MB')
+  assert.equal(fileDimension(4032, 3024, null), '4032 × 3024')
+  assert.equal(fileDimension(null, null, null), '')
+})
+
+console.log('\n[validate.ts] v1.1 上传前置校验（白名单 = JPEG / PNG / WebP / HEIC，排除 GIF）')
 
 test('extensionOf: 大小写归一、无扩展名返回空串', () => {
   assert.equal(extensionOf('IMG_0001.JPG'), 'jpg')
@@ -215,19 +262,22 @@ test('extensionOf: 大小写归一、无扩展名返回空串', () => {
   assert.equal(extensionOf('photo'), '')
 })
 
-test('isAllowedImage: 白名单与后端一致（jpg/jpeg/png/webp）', () => {
-  for (const name of ['a.jpg', 'a.jpeg', 'a.png', 'a.webp', 'A.JPG']) {
+test('isAllowedImage: HEIC / HEIF 纳入白名单，GIF 明确排除', () => {
+  for (const name of ['a.jpg', 'a.jpeg', 'a.png', 'a.webp', 'A.JPG', 'a.heic', 'IMG.HEIF']) {
     assert.equal(isAllowedImage(name), true, `${name} 应允许`)
   }
-  for (const name of ['a.heic', 'a.svg', 'a.gif', 'a.pdf', 'noext']) {
+  for (const name of ['a.gif', 'a.GIF', 'a.svg', 'a.pdf', 'noext']) {
     assert.equal(isAllowedImage(name), false, `${name} 应拒绝`)
   }
 })
 
-test('isUnsupportedImage: HEIC / HEIF 命中（用于触发 iPhone 专属提示）', () => {
-  assert.equal(isUnsupportedImage('IMG_0001.heic'), true)
-  assert.equal(isUnsupportedImage('IMG.HEIF'), true)
-  assert.equal(isUnsupportedImage('a.jpg'), false)
+test('isHeicImage / isGifImage: 四态判定与选择阶段拦截互不串台', () => {
+  assert.equal(isHeicImage('IMG_0001.heic'), true)
+  assert.equal(isHeicImage('IMG.HEIF'), true)
+  assert.equal(isHeicImage('a.jpg'), false)
+  assert.equal(isGifImage('a.gif'), true)
+  assert.equal(isGifImage('a.GIF'), true)
+  assert.equal(isGifImage('a.heic'), false)
 })
 
 test('isTooLarge: 20MB 边界（等于上限允许，多 1 字节拒绝）', () => {
@@ -236,7 +286,13 @@ test('isTooLarge: 20MB 边界（等于上限允许，多 1 字节拒绝）', () 
   assert.equal(MAX_FILE_SIZE, 20 * 1024 * 1024, '前端 20MB 必须与后端 Limits.MAX_FILE_SIZE_BYTES 一致')
 })
 
-console.log('\n[validate.ts] 表单规则')
+console.log('\n[validate.ts] 表单规则与家庭码归一')
+
+test('normalizeFamilyCode: 去空白 / 忽略连字符 / 统一大写', () => {
+  assert.equal(normalizeFamilyCode(' bee7k-m3q92 '), 'BEE7KM3Q92')
+  assert.equal(normalizeFamilyCode('BEE7KM3Q92'), 'BEE7KM3Q92')
+  assert.equal(normalizeFamilyCode(''), '')
+})
 
 test('validateEmail: 空 / 格式 / 长度三类错误互不覆盖', () => {
   assert.equal(validateEmail(''), '请输入邮箱')
@@ -258,13 +314,6 @@ test('validateNickname: 必填且不超 32 字', () => {
   assert.equal(validateNickname('  '), '请输入昵称')
   assert.equal(validateNickname('严过关'), '')
   assert.equal(validateNickname('名'.repeat(33)), '昵称长度不能超过 32 个字符')
-})
-
-test('validateInviteCode: 选填，但填写时必须是 8 位字母数字', () => {
-  assert.equal(validateInviteCode(''), '')
-  assert.equal(validateInviteCode('ABC'), '邀请码为 8 位字母数字')
-  assert.equal(validateInviteCode('ABCD1234'), '')
-  assert.equal(validateInviteCode('ABCD-234'), '邀请码为 8 位字母数字')
 })
 
 test('validateRange: 空值放行，非数字与越界分别报错', () => {

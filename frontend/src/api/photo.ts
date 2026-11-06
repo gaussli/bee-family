@@ -47,8 +47,9 @@ export function getPhoto(id: number): Promise<PhotoDetail> {
 /**
  * 上传单张照片。
  *
- * <p>服务端始终返回 HTTP 200，逐张失败信息在 `failures[]` 里（code 41301 / 41501），
- * 调用方必须检查 `result.failureCount`，不能依赖 catch。</p>
+ * <p>服务端始终返回 HTTP 200，逐张成败在 `successes[] / failures[]`。
+ * `failures[].message` 是服务端逐字下发的用户可见文案（含 HEIC 转码失败的 iPhone
+ * 降级指引），调用方**直接展示**，不得按 code 做本地文案映射（docs/07 §9.9）。</p>
  *
  * @param file       文件
  * @param albumId    目标相册（null = 未分类）

@@ -1,9 +1,10 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue'
 import * as photoApi from '@/api/photo'
 import { ApiError } from '@/api/http'
+import { useUploadProgressStore } from '@/stores/upload-progress'
 import type { Photo } from '@/types/models'
-import type { UploadStatus, UploadSummary, UploadTask } from '@/types/upload'
-import { isTooLarge, isUnsupportedImage } from '@/utils/validate'
+import type { UploadPhase, UploadStatus, UploadSummary, UploadTask } from '@/types/upload'
+import { isGifImage, isHeicImage, isTooLarge } from '@/utils/validate'
 import { createObjectUrl, revokeObjectUrl } from '@/utils/image'
 
 /** 同时上传的并发数（浏览器对同域 keep-alive 连接数通常为 6，取 3 留余量）。 */
@@ -18,6 +19,8 @@ export interface UploadQueueOptions {
   onSettled?: () => void
   /** 单个文件失败时回调，参数为面向用户的错误文案。 */
   onFailed?: (task: UploadTask) => void
+  /** 选择阶段被拦截的 GIF 张数（不进入队列）。 */
+  onRejectedGif?: (count: number) => void
 }
 
 /**
@@ -25,10 +28,14 @@ export interface UploadQueueOptions {
  *
  * <p>关键约束（来自后端实测行为）：`POST /api/photos/upload` **永远返回 200**，
  * 单个文件是否成功体现在响应体的 `successes[] / failures[]` 中，
- * 因此单文件失败**不能**用 `catch` 的 HTTP 状态判断，必须解析 payload。</p>
+ * 因此单文件失败**不能**用 `catch` 的 HTTP 状态判断，必须解析 payload。
+ * 失败文案逐字取 `failures[].message`（服务端权威），**不按 code 做本地映射**
+ * （docs/06 §9.2 ④、docs/07 §9.9）。</p>
  *
- * 队列语义：`queued → uploading → done | error`；`error` 可 `retry` 重排；
- * 关闭面板不中断传输（队列实例挂在组件上，组件用 `v-show` 常驻）。
+ * <p>队列语义：`queued → uploading → done | error`；`error` 可 `retry` 重排。
+ * HEIC 的用户可见四态映射：queued→①识别中、uploading(HEIC)→②转码中、
+ * done→③成功、error→④失败；「排队」「上传中」为瞬时子状态，不占一等状态。
+ * GIF 在 `addFiles` 阶段即被拦截，不进入队列，四态中不存在任何 GIF 分支。</p>
  */
 export function useUploadQueue(options: UploadQueueOptions = {}): {
   tasks: Ref<UploadTask[]>
@@ -46,6 +53,7 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
 } {
   const tasks = ref<UploadTask[]>([])
   const controllers = new Map<number, AbortController>()
+  const progress = useUploadProgressStore()
   let seed = 0
   let startedAt = 0
   let uploadedBytes = 0
@@ -65,11 +73,17 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
   const failedCount = computed<number>(() => tasks.value.filter((task) => task.status === 'error').length)
   const isUploading = computed<boolean>(() => activeCount.value > 0)
 
-  /** 加入文件：入队前先做本地校验，明显不合格的直接标红，不浪费一次请求。 */
+  /** 加入文件：GIF 直接跳过；体积超限本地标红；HEIC 正常入队。 */
   function addFiles(files: File[], albumId: number | null): number {
     const accepted: UploadTask[] = []
+    let gifCount = 0
     for (const file of files) {
+      if (isGifImage(file.name)) {
+        gifCount += 1
+        continue
+      }
       seed += 1
+      const heic = isHeicImage(file.name)
       const task: UploadTask = {
         id: seed,
         file,
@@ -77,6 +91,8 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
         fileName: file.name,
         size: file.size,
         status: 'queued',
+        phase: 'detecting',
+        isHeic: heic,
         progress: 0,
         errorCode: null,
         errorMessage: null,
@@ -85,15 +101,14 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
 
       if (isTooLarge(file.size)) {
         task.status = 'error'
+        task.phase = 'failed'
         task.errorCode = 41301
         task.errorMessage = '文件超过 20MB'
-      } else if (isUnsupportedImage(file.name)) {
-        task.status = 'error'
-        task.errorCode = 41501
-        task.errorMessage = '不支持 HEIC/HEIF，请先转成 JPG'
       }
       accepted.push(task)
     }
+
+    if (gifCount > 0) options.onRejectedGif?.(gifCount)
 
     tasks.value = [...tasks.value, ...accepted].slice(-MAX_TASKS)
     if (startedAt === 0) startedAt = Date.now()
@@ -108,9 +123,7 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
     if (tasks.value.length <= MAX_TASKS) return
     const overflow = tasks.value.length - MAX_TASKS
     const removable = tasks.value.filter((task) => task.status === 'done').slice(0, overflow)
-    for (const task of removable) {
-      revokeObjectUrl(task.previewUrl)
-    }
+    for (const task of removable) revokeObjectUrl(task.previewUrl)
     const removedIds = new Set(removable.map((task) => task.id))
     tasks.value = tasks.value.filter((task) => !removedIds.has(task.id))
   }
@@ -166,29 +179,38 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
       }
     } finally {
       pumping = false
-      if (activeCount.value === 0) {
-        options.onSettled?.()
-      }
+      if (activeCount.value === 0) options.onSettled?.()
     }
   }
 
   async function upload(task: UploadTask, albumId: number | null): Promise<void> {
     const controller = new AbortController()
     controllers.set(task.id, controller)
-    update(task.id, { status: 'uploading', progress: 0, errorCode: null, errorMessage: null })
+    progress.registerController(task.id, controller)
+    progress.begin(task.id)
+    // ① 识别中结束 → HEIC 进入 ② 转码中，其它格式进入瞬时「上传中」子状态。
+    update(task.id, {
+      status: 'uploading',
+      phase: task.isHeic ? 'transcoding' : 'uploading',
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+    })
 
     try {
       const result = await photoApi.uploadPhoto(
         task.file,
         albumId,
         (percent) => {
-          update(task.id, { progress: percent })
+          const phase: UploadPhase = task.isHeic && percent < 100 ? 'transcoding' : 'uploading'
+          update(task.id, { progress: percent, phase })
         },
         controller.signal,
       )
 
       const failure = result.failures[0]
       if (failure) {
+        // 逐字渲染服务端 message（50003 / 50301 同为 §9.2 ④ 权威文案）。
         markFailed(task.id, failure.code, failure.message)
         return
       }
@@ -200,23 +222,24 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
       }
 
       uploadedBytes += task.size
-      update(task.id, { status: 'done', progress: 100 })
+      update(task.id, { status: 'done', phase: 'done', progress: 100 })
       options.onUploaded?.(photo)
       trim()
     } catch (error) {
       if (error instanceof ApiError) {
-        // 网络中断 / 401 等整体性错误
         markFailed(task.id, error.code, error.message)
         return
       }
       markFailed(task.id, -1, '上传失败，请检查网络后重试')
     } finally {
       controllers.delete(task.id)
+      progress.unregisterController(task.id)
+      progress.end(task.id)
     }
   }
 
   function markFailed(id: number, code: number, message: string): void {
-    update(id, { status: 'error', errorCode: code, errorMessage: message })
+    update(id, { status: 'error', phase: 'failed', errorCode: code, errorMessage: message })
     const task = tasks.value.find((item) => item.id === id)
     if (task) options.onFailed?.(task)
   }
@@ -224,17 +247,26 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
   function retry(id: number): void {
     const task = tasks.value.find((item) => item.id === id)
     if (!task) return
-    update(id, { status: 'queued', progress: 0, errorCode: null, errorMessage: null })
+    // 重新入队并回到 ① 识别中
+    update(id, {
+      status: 'queued',
+      phase: 'detecting',
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+    })
     start(task.albumId ?? null)
   }
 
   function cancel(id: number): void {
     controllers.get(id)?.abort()
     controllers.delete(id)
+    progress.unregisterController(id)
+    progress.end(id)
     const task = tasks.value.find((item) => item.id === id)
     if (!task) return
     if (task.status === 'uploading' || task.status === 'queued') {
-      update(id, { status: 'error', errorCode: -2, errorMessage: '已取消上传' })
+      update(id, { status: 'error', phase: 'failed', errorCode: -2, errorMessage: '已取消上传' })
     }
   }
 
@@ -259,7 +291,11 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
   function dispose(): void {
     for (const controller of controllers.values()) controller.abort()
     controllers.clear()
-    for (const task of tasks.value) revokeObjectUrl(task.previewUrl)
+    for (const task of tasks.value) {
+      progress.unregisterController(task.id)
+      progress.end(task.id)
+      revokeObjectUrl(task.previewUrl)
+    }
     tasks.value = []
   }
 
@@ -279,10 +315,23 @@ export function useUploadQueue(options: UploadQueueOptions = {}): {
   }
 }
 
-/** 状态 → 中文标签，供队列条目展示。 */
+/** 调度状态 → 中文标签（兼容旧调用点）。 */
 export const UPLOAD_STATUS_TEXT: Record<UploadStatus, string> = {
   queued: '等待中',
   uploading: '上传中',
   done: '已完成',
   error: '失败',
+}
+
+/**
+ * 用户可见状态文案（docs/06 §9.2 四态 + 瞬时子状态）。
+ * 失败态由调用方直接用 `task.errorMessage`（服务端原文），不在此映射。
+ */
+export const UPLOAD_PHASE_TEXT: Record<UploadPhase, string> = {
+  queued: '等待上传',
+  detecting: '正在识别照片格式…',
+  transcoding: '正在转换 HEIC 为通用格式…',
+  uploading: '正在上传…',
+  done: '已上传',
+  failed: '上传失败',
 }
