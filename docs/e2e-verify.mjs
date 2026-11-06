@@ -13,9 +13,9 @@
  * 说明：
  *   - 脚本自建独立家庭（qa-e2e-<时间戳>@home.local），不触碰演示家庭的数据；
  *   - 结束时会通过 DELETE /api/family 走一遍 9 步删除 + 磁盘清理；
- *   - 越权隔离需要「第二个家庭」：由于注册接口要求邀请码（user 表非空时），
- *     脚本先用邀请码把用户 C 拉进本家庭，再用 SQL 把 C 的成员关系迁到新建家庭 B，
- *     从而构造出真正的跨家庭场景（familyId 由 family_member 每请求解析，见 ADR-02）。
+ *   - 越权隔离需要「第二个家庭」：直接注册用户 C，再用 SQL 把 C 的成员关系迁到
+ *     新建家庭 B，从而构造出真正的跨家庭场景（familyId 由 family_member 每请求解析，见 ADR-02）；
+ *     不依赖任何邀请码端点（v1.1 Q7 已删除 GET /api/family/invite-code 与 40902）。
  */
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs'
@@ -299,7 +299,7 @@ console.log('\n=== A. 主流程（注册 → 宝宝 → 相册 → 上传 → �
 const emailA = `qa-e2e-${stampLabel}@home.local`
 const passwordA = 'qa-secret-123'
 const registerA = await call('POST', '/api/auth/register', {
-  json: { email: emailA, password: passwordA, nickname: 'QA验收', inviteCode: null },
+  json: { email: emailA, password: passwordA, nickname: 'QA验收' },
 })
 const tokenA = registerA.body?.data?.token
 const familyA = registerA.body?.data?.familyId
@@ -455,28 +455,28 @@ snapshotCount('A15')
 
 console.log('\n=== B. 越权隔离（第二个家庭 token 访问第一个家庭）===')
 
+// v1.1 Q7：邀请码端点与 40902 错误码已永久移除，用「端点不存在」做正向验收
 const inviteResp = await call('GET', '/api/family/invite-code', { token: tokenA })
-const inviteCode = inviteResp.body?.data?.code
-record('B1', 'owner 可查看邀请码（8 位、24h 有效）',
-  inviteResp.status === 200 && inviteCode?.length === 8 && inviteResp.body?.data?.expired === false,
-  `status=${inviteResp.status} code=${inviteCode} expiresAt=${inviteResp.body?.data?.expiresAt} expired=${inviteResp.body?.data?.expired}`)
+record('B1', '旧邀请码端点已移除（404/403/401/405，不再返回 200 邀请码）',
+  [404, 403, 401, 405].includes(inviteResp.status),
+  `status=${inviteResp.status} code=${inviteResp.body?.code}`)
 
 const noInvite = await call('POST', '/api/auth/register', {
   json: { email: `qa-nocode-${stampLabel}@home.local`, password: passwordA, nickname: '无邀请码' },
 })
-record('B2', 'user 表非空时缺邀请码注册 → 40902（不静默建家庭）',
-  noInvite.status === 409 && noInvite.body?.code === 40902,
+record('B2', '注册不再校验邀请码：不会出现已删除的 40902',
+  noInvite.body?.code !== 40902,
   `status=${noInvite.status} code=${noInvite.body?.code}`)
 snapshotCount('B2')
 
 const emailC = `qa-e2e-c-${stampLabel}@home.local`
 const registerC = await call('POST', '/api/auth/register', {
-  json: { email: emailC, password: passwordA, nickname: '第二家庭', inviteCode },
+  json: { email: emailC, password: passwordA, nickname: '第二家庭' },
 })
 const tokenC = registerC.body?.data?.token
 const userC = registerC.body?.data?.user?.id
-record('B3', '凭邀请码注册成功并加入同一家庭',
-  registerC.status === 200 && registerC.body?.data?.familyId === familyA,
+record('B3', '注册第二个账号成功（家庭归属由后续 SQL 夹具决定）',
+  registerC.status === 200 && Number.isInteger(userC),
   `status=${registerC.status} code=${registerC.body?.code} familyId=${registerC.body?.data?.familyId}`)
 snapshotCount('B3')
 

@@ -58,7 +58,7 @@ async function call(method, path, options = {}) {
 
 const stamp = Date.now()
 const reg = await call('POST', '/api/auth/register', {
-  json: { email: `probe2-${stamp}@home.local`, password: 'probe-secret-123', nickname: '探针2', inviteCode: null },
+  json: { email: `probe2-${stamp}@home.local`, password: 'probe-secret-123', nickname: '探针2' },
 })
 const token = reg.body?.data?.token
 if (!token) {

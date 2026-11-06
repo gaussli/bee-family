@@ -68,7 +68,7 @@ async function upload(token, albumId, files) {
 const image = readFileSync(IMAGE_PATH)
 const stamp = Date.now()
 const reg = await call('POST', '/api/auth/register', {
-  json: { email: `probe-${stamp}@home.local`, password: 'probe-secret-123', nickname: '探针', inviteCode: null },
+  json: { email: `probe-${stamp}@home.local`, password: 'probe-secret-123', nickname: '探针' },
 })
 const token = reg.body?.data?.token
 console.log(`register: status=${reg.status} code=${reg.body?.code} role=${reg.body?.data?.role}`)

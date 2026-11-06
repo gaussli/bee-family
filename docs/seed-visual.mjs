@@ -69,7 +69,7 @@ async function upload(token, albumId, names) {
 }
 
 const register = await call('POST', '/api/auth/register', {
-  json: { email: EMAIL, password: PASSWORD, nickname: NICKNAME, inviteCode: null },
+  json: { email: EMAIL, password: PASSWORD, nickname: NICKNAME },
 })
 if (register.status !== 200) {
   console.error(`注册失败：${register.status} ${JSON.stringify(register.body)}`)

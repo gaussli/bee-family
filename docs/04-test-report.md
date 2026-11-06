@@ -1,16 +1,19 @@
 # 04 · 测试验收报告（QA）
 
-> 结论先行：**核心链路可交付，但有 2 个必须先修的源码缺陷（P1）与 1 个待修并发缺陷（P1，低概率）**；
-> 前端视觉回归因沙箱无法运行浏览器，本轮**未验证**，已在 §7 给出可直接执行的命令与判定标准。
+> 结论（**两轮测试已用尽，最终口径以 §11 主线程补跑为准**）：P1-①（PATCH 照片丢相册）、
+> P1-②（标签并发）、P1-③（设封面死锁）均已修复；主线程用 `java -jar` 独立空库补跑 **E2E 49/49 全绿**。
+> QA 第二轮（`mvn spring-boot:run` 启动）复现到一次 **E3 连接池自我锁死**（`bee-family-pool` 10s 超时，5/10 500），
+> 属**间歇性、结构性残留风险**（池上限 10 + `REQUIRES_NEW` 未变），已记为 §12 风险项，不推翻 §11 结论。
+> 浏览器像素级视觉回归因沙箱无法启动 Chrome，仍未重拍，见 §7.2 / §11.3。
 
 | 项 | 值 |
 | --- | --- |
-| 被测版本 | `main`（后端 T01–T13 / 前端 T14–T25 全部合并后） |
-| 后端测试 | `mvn test` → **190 用例全绿**；`-Dgroups=mysql` → **6 用例全绿** |
+| 被测版本 | Round1 `a1236ed` 之前；Round2 `a1236ed`（三处 P1 修复）；§11 主线程补跑为更新构建 |
+| 后端测试 | Round1 **190 全绿**；Round2 `mvn test` **191 全绿**；主线程 `mvn -o test` **202 全绿** |
 | 前端静态检查 | `type-check` / `lint` / `build` 全部 0 error；`npm run verify` → **32/32** |
-| 端到端 & 安全 & 并发 | **49 用例：46 通过 / 3 失败**；2 个源码缺陷 + 2 项环境受限 |
-| 视觉回归 | **未执行**（沙箱内 Chrome 无法启动，见 §7） |
-| 交付建议 | **有条件通过**：修 A9b、E3 后可上线；E2 死锁建议同批修（见 §8） |
+| 端到端 & 安全 & 并发 | Round1 46/49；QA Round2 47/49；**主线程 `java -jar` 补跑 49/49**（§11），差异见 §12 |
+| 视觉回归 | **未执行**（沙箱内 Chrome 无法启动，见 §7.2 / §11.3） |
+| 交付建议 | **可交付**：§11 已签字；补一条「连接池并发压测」风险项 + 非沙箱终端补拍截图（§12） |
 
 ---
 
@@ -414,3 +417,88 @@ node docs/e2e-verify.mjs
 
 - `frontend/vite.config.ts`：代理目标支持 `VITE_API_TARGET` 环境变量覆盖（默认仍是 `http://localhost:8080`），使视觉回归可以指向独立端口的后端。
 - 本报告 §10 / §11：更新结论、补录实测数据、修正 H2 的假阴性判定。
+
+---
+
+## 12. QA 第二轮独立回归 + 与 §11 的差异裁定（严过关，2/2 轮硬上限）
+
+### 12.1 本轮实际执行
+
+Engineer 提交 `a1236ed`（三处 P1 修复）后，我在**全新空库 `bee_family_e2e2` + `:18081` 独立实例**上重跑：
+
+```bash
+export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home
+cd backend && mvn -o -Dmaven.repo.local=<repo>/.m2repo test     # 191 全绿 / BUILD SUCCESS
+mysql -uroot -e "create database bee_family_e2e2 default character set utf8mb4"
+cd backend && DB_URL='jdbc:mysql://localhost:3306/bee_family_e2e2?...' \
+  DB_USERNAME=root DB_PASSWORD=root STORAGE_ROOT=./data/uploads-e2e3 \
+  mvn -o spring-boot:run -Dspring-boot.run.arguments=--server.port=18081
+BASE_URL=http://127.0.0.1:18081 DB_NAME=bee_family_e2e2 DB_PASSWORD=root \
+  UPLOAD_ROOT=backend/data/uploads-e2e3 node docs/e2e-verify.mjs
+```
+
+| 套件 | 结果 |
+| --- | --- |
+| `mvn test` | **191 条 / 0 失败 / 0 错误 / BUILD SUCCESS**（含 Engineer 新增的 `noopUpdateWritesNothing` 等护栏） |
+| E2E | **49 条：47 通过 / 2 失败**（E3 源码侧、H2 启动方式侧） |
+| A9b（P1-①） | ✅ `album_id=1(期望 1) photo_count=3(期望 3)`；计数轨迹 `A5=3 → A9=3 → D5=3` 全程不漂移 |
+| E2（P1-③） | ✅ 10 轮设封面 × 删照片：`5xx 0/10、悬挂 0/10` |
+| E3（P1-②） | ❌ `tagRows=1 relations=5/10`，**5/10 返回 500/50001** |
+| 其余 46 条 | ✅ 主流程 / 越权 10 条 / 鉴权 6 条 / 上传安全 6 条 / E1 9/9 / E4 / F 分页 109 条无重无漏 / G1 |
+| 性能（n=10 P95） | 首页 53ms、第 5 页 11ms、相册详情 17ms、60 张列表 24ms，均 ≤300ms |
+
+### 12.2 两个差异，逐条裁定（不推翻 §11）
+
+**① H2「环境受限」是我的假阴性，接受 §11 的更正。**
+我用 `mvn spring-boot:run` 启动，子进程 unlink 被沙箱拦截（日志 1200 条 `Operation not permitted`），
+所以判定「磁盘清理不可验证」。主线程改 `java -jar` 直启，同一清理链路 `残留文件=0 / 字节=0` 通过。
+**结论：H2 是启动方式造成，不是源码缺陷，§7.1 与 §3.4 中相关表述以 §11.2 为准。**
+
+**② E3 在 QA 第二轮里换了一个根因，属间歇性残留风险，不推翻 49/49。**
+本轮日志 `Duplicate entry = 0`、`AssertionFailure = 0`、`Deadlock = 0` —— 说明 `TagWriter` + `insertIfAbsent`
+确实消掉了唯一键竞态；但 5 个请求仍 500，栈是：
+
+```
+CannotCreateTransactionException: Could not open JPA EntityManager for transaction
+  at TagWriter$$SpringCGLIB$$0.createOrFind / TagService.resolveOrCreate(TagService.java:184)
+Caused by: JDBCConnectionException: Unable to acquire JDBC Connection
+  [bee-family-pool - Connection is not available, request timed out after 10004ms
+   (total=10, active=10, idle=0, waiting=9)]
+Caused by: SQLTransientConnectionException: bee-family-pool - Connection is not available ...
+```
+
+即 `maximum-pool-size=10` + `TagWriter.createOrFind` 的 `REQUIRES_NEW`：10 个并发 PATCH 的外层事务各占 1 条连接，
+内层新事务再要第 2 条 → 10 持有 + 10 等待 > 池上限 → 全员等 10s 超时。
+
+补充对照（`/tmp/probe-pool.mjs`，同一实例）：**单独** 10 并发上传（同样走 `PhotoIngestService.ingest` 的 `REQUIRES_NEW`）
+10/10 200 / 673ms；**单独** 10 并发打新标签 10/10 200 / 57ms。也就是说它不是「10 并发必挂」，
+而是与前面步骤留下的池状态/时序相关 —— 这解释了为什么 §11 的 `java -jar` 补跑能 49/49：
+**构建与运行时机不同，竞态窗口没撞上。**
+
+**裁定**：结构条件（池 10 + `REQUIRES_NEW`）到当前 HEAD 仍未改变，**风险仍然存在**，记为
+`R-16：连接池并发上限与嵌套新事务耦合`，严重度 P2（间歇、需特定时序；撞上就是 5xx + 丢标签 + 10s 等待）。
+不阻塞 §11 的交付签字，但建议后续做两件事：
+- 把 `resolveOrCreate` 的 upsert 放回调用方事务（不再开新事务），或把池上限/批量并发上限解耦；
+- 补一条 **N ≥ 池上限的持续压测**（例如 30 并发 × 20 轮打标签 + 上传），把 `bee-family-pool` 的 `active/idle/waiting` 打出来。
+
+验证方式：`BASE_URL=... DB_PASSWORD=... node docs/e2e-verify.mjs`（E3 需 `relations=10`、全 200）+ `node /tmp/probe-pool.mjs`。
+
+### 12.3 基线漂移：我的脚本已按 Q7 新契约做机械适配（未执行）
+
+v1.1（`758da71`）永久删除邀请码（`40902`、`/api/family/invite-code`、`RegisterReq.inviteCode`）。
+我同步了自己的交付物，**没有放宽任何业务断言**，只是把「已删除的契约」改成正向验收：
+
+- `docs/e2e-verify.mjs` B1 → `[404,403,401,405]` 才算通过；B2 → 不再返回 `40902`；
+  B3 → 直接注册用户 C，第二个家庭仍由 SQL 夹具构造（比原来更不依赖被测功能）；
+- `docs/e2e-verify.mjs` / `probe-count.mjs` / `probe-d6.mjs` / `seed-visual.mjs` 注册体去掉 `inviteCode: null`；
+- 四个脚本 `node --check` 全通过，`grep -c inviteCode = 0`。
+
+**这些改动没有重新执行**：两轮测试额度已用尽，且 v1.1 需 T02 完成 `Family` 实体与 V2 DDL 对齐后应用才能启动
+（`ddl-auto: validate`）。因此它们不计入通过率，属「代码资产同步」，待下一轮回归执行。
+
+### 12.4 Round 2 路由结论（2/2，退出）
+
+- **Send To: Engineer** —— §12.2 的 R-16 连接池风险，附完整栈与复现命令（不要求立即改，但需登记）；
+- **Send To: NoOne** —— A9b / E2 / 其余 46 条通过；H2 假阴性已由 §11 更正；
+- **不再进入第 3 轮**。剩余项统一列为 Known Issues：`R-16 连接池耦合`、浏览器像素级视觉回归（§11.3）、
+  Q7 契约适配脚本待执行。最终交付口径以 §10 / §11 为准。
